@@ -186,37 +186,22 @@ unsafe impl Send for Isolate {}
 
 impl Drop for Isolate {
   fn drop(&mut self) {
-    // remove shared_libdeno_isolate reference
-    *self.shared_isolate_handle.lock().unwrap() = None;
-
-    // TODO Too much boiler plate.
-    // <Boilerplate>
     let isolate = self.v8_isolate.take().unwrap();
-    // Clear persistent handles we own.
-    {
-      let mut locker = v8::Locker::new(&isolate);
-      let mut hs = v8::HandleScope::new(locker.enter());
-      let scope = hs.enter();
-      // </Boilerplate>
-      self.global_context.reset(scope);
-      self.shared_ab.reset(scope);
-      self.js_recv_cb.reset(scope);
-      for (_key, handle) in self.pending_promise_exceptions.iter_mut() {
-        handle.reset(scope);
-      }
-    }
     if let Some(creator) = self.snapshot_creator.take() {
       // TODO(ry) V8 has a strange assert which prevents a SnapshotCreator from
       // being deallocated if it hasn't created a snapshot yet.
       // https://github.com/v8/v8/blob/73212783fbd534fac76cc4b66aac899c13f71fc8/src/api.cc#L603
       // If that assert is removed, this if guard could be removed.
       // WARNING: There may be false positive LSAN errors here.
-      std::mem::forget(isolate);
+      //std::mem::forget(isolate);
       if self.has_snapshotted {
         drop(creator);
       }
-    } else {
-      drop(isolate);
+      // TODO(ry): in rusty_v8, `SnapShotCreator::get_owned_isolate()` returns
+      // a `struct OwnedIsolate` which is not actually owned, hence the need
+      // here to leak the `OwnedIsolate` in order to avoid a double free and
+      // the segfault that it causes.
+      std::mem::forget(isolate);
     }
   }
 }
@@ -272,12 +257,9 @@ impl Isolate {
       let mut creator =
         v8::SnapshotCreator::new(Some(&bindings::EXTERNAL_REFERENCES));
       let isolate = unsafe { creator.get_owned_isolate() };
-      let isolate = Isolate::setup_isolate(isolate);
+      let mut isolate = Isolate::setup_isolate(isolate);
 
-      let mut locker = v8::Locker::new(&isolate);
-      let scope = locker.enter();
-
-      let mut hs = v8::HandleScope::new(scope);
+      let mut hs = v8::HandleScope::new(&mut isolate);
       let scope = hs.enter();
 
       let context = bindings::initialize_context(scope);
@@ -294,12 +276,9 @@ impl Isolate {
       }
 
       let isolate = v8::Isolate::new(params);
-      let isolate = Isolate::setup_isolate(isolate);
+      let mut isolate = Isolate::setup_isolate(isolate);
 
-      let mut locker = v8::Locker::new(&isolate);
-      let scope = locker.enter();
-
-      let mut hs = v8::HandleScope::new(scope);
+      let mut hs = v8::HandleScope::new(&mut isolate);
       let scope = hs.enter();
 
       let context = match load_snapshot {
@@ -364,7 +343,7 @@ impl Isolate {
 
   pub fn exception_to_err_result<'a, T>(
     &mut self,
-    scope: &mut (impl v8::ToLocal<'a> + v8::InContext),
+    scope: &mut impl v8::ToLocal<'a>,
     exception: v8::Local<v8::Value>,
   ) -> Result<T, ErrBox> {
     self.handle_exception(scope, exception);
@@ -373,7 +352,7 @@ impl Isolate {
 
   pub fn handle_exception<'a>(
     &mut self,
-    scope: &mut (impl v8::ToLocal<'a> + v8::InContext),
+    scope: &mut impl v8::ToLocal<'a>,
     exception: v8::Local<v8::Value>,
   ) {
     // Use a HandleScope because the  functions below create a lot of
@@ -381,13 +360,23 @@ impl Isolate {
     let mut hs = v8::HandleScope::new(scope);
     let scope = hs.enter();
 
-    let is_terminating_exception = scope.isolate().is_execution_terminating();
+    // TODO(piscisaureus): in rusty_v8, `is_execution_terminating()` should
+    // also be implemented on `struct Isolate`.
+    let is_terminating_exception = scope
+      .isolate()
+      .thread_safe_handle()
+      .is_execution_terminating();
     let mut exception = exception;
 
     if is_terminating_exception {
       // TerminateExecution was called. Cancel exception termination so that the
       // exception can be created..
-      scope.isolate().cancel_terminate_execution();
+      // TODO(piscisaureus): in rusty_v8, `cancel_terminate_execution()` should
+      // also be implemented on `struct Isolate`.
+      scope
+        .isolate()
+        .thread_safe_handle()
+        .cancel_terminate_execution();
 
       // Maybe make a new exception object.
       if exception.is_null_or_undefined() {
@@ -398,24 +387,15 @@ impl Isolate {
     }
 
     let message = v8::Exception::create_message(scope, exception);
-    let json_str = self.encode_message_as_json(scope, message);
+    let json_str = encode_message_as_json(scope, message);
     self.last_exception = Some(json_str);
 
     if is_terminating_exception {
       // Re-enable exception termination.
-      scope.isolate().terminate_execution();
+      // TODO(piscisaureus): in rusty_v8, `terminate_execution()` should also
+      // be implemented on `struct Isolate`.
+      scope.isolate().thread_safe_handle().terminate_execution();
     }
-  }
-
-  pub fn encode_message_as_json<'a>(
-    &mut self,
-    scope: &mut (impl v8::ToLocal<'a> + v8::InContext),
-    message: v8::Local<v8::Message>,
-  ) -> String {
-    let context = scope.isolate().get_current_context();
-    let json_obj = bindings::encode_message_as_object(scope, message);
-    let json_string = v8::json::stringify(context, json_obj.into()).unwrap();
-    json_string.to_rust_string_lossy(scope)
   }
 
   /// Defines the how Deno.core.dispatch() acts.
@@ -440,13 +420,6 @@ impl Isolate {
     self.js_error_create = Arc::new(f);
   }
 
-  /// Get a thread safe handle on the isolate.
-  pub fn shared_isolate_handle(&mut self) -> IsolateHandle {
-    IsolateHandle {
-      shared_isolate: self.shared_isolate_handle.clone(),
-    }
-  }
-
   /// Executes a bit of built-in JavaScript to provide Deno.sharedQueue.
   pub(crate) fn shared_init(&mut self) {
     if self.needs_init {
@@ -463,7 +436,7 @@ impl Isolate {
 
   pub fn dispatch_op<'s>(
     &mut self,
-    scope: &mut (impl v8::ToLocal<'s> + v8::InContext),
+    scope: &mut impl v8::ToLocal<'s>,
     op_id: OpId,
     control_buf: &[u8],
     zero_copy_buf: Option<ZeroCopyBuf>,
@@ -517,10 +490,9 @@ impl Isolate {
     self.shared_init();
 
     let isolate = self.v8_isolate.as_ref().unwrap();
-    let mut locker = v8::Locker::new(isolate);
-    assert!(!self.global_context.is_empty());
-    let mut hs = v8::HandleScope::new(locker.enter());
+    let mut hs = unsafe { v8::HandleScope::new2(isolate) };
     let scope = hs.enter();
+    assert!(!self.global_context.is_empty());
     let context = self.global_context.get(scope).unwrap();
     let mut cs = v8::ContextScope::new(scope, context);
     let scope = cs.enter();
@@ -566,7 +538,7 @@ impl Isolate {
 
   fn check_promise_exceptions<'s>(
     &mut self,
-    scope: &mut (impl v8::ToLocal<'s> + v8::InContext),
+    scope: &mut impl v8::ToLocal<'s>,
   ) -> Result<(), ErrBox> {
     if let Some(&key) = self.pending_promise_exceptions.keys().next() {
       let mut handle = self.pending_promise_exceptions.remove(&key).unwrap();
@@ -580,10 +552,10 @@ impl Isolate {
 
   fn async_op_response<'s>(
     &mut self,
-    scope: &mut (impl v8::ToLocal<'s> + v8::InContext),
+    scope: &mut impl v8::ToLocal<'s>,
     maybe_buf: Option<(OpId, Box<[u8]>)>,
   ) -> Result<(), ErrBox> {
-    let context = scope.isolate().get_current_context();
+    let context = scope.get_current_context().unwrap();
     let global: v8::Local<v8::Value> = context.global(scope).into();
     let js_recv_cb = self
       .js_recv_cb
@@ -621,8 +593,7 @@ impl Isolate {
     assert!(self.snapshot_creator.is_some());
 
     let isolate = self.v8_isolate.as_ref().unwrap();
-    let mut locker = v8::Locker::new(isolate);
-    let mut hs = v8::HandleScope::new(locker.enter());
+    let mut hs = unsafe { v8::HandleScope::new2(isolate) };
     let scope = hs.enter();
     self.global_context.reset(scope);
 
@@ -643,8 +614,8 @@ impl Future for Isolate {
     inner.waker.register(cx.waker());
     inner.shared_init();
 
-    let mut locker = v8::Locker::new(&*inner.v8_isolate.as_mut().unwrap());
-    let mut hs = v8::HandleScope::new(locker.enter());
+    let isolate = inner.v8_isolate.as_ref().unwrap();
+    let mut hs = unsafe { v8::HandleScope::new2(isolate) };
     let scope = hs.enter();
     let context = inner.global_context.get(scope).unwrap();
     let mut cs = v8::ContextScope::new(scope, context);
@@ -702,24 +673,14 @@ impl Future for Isolate {
   }
 }
 
-/// IsolateHandle is a thread safe handle on an Isolate. It exposed thread safe V8 functions.
-#[derive(Clone)]
-pub struct IsolateHandle {
-  shared_isolate: Arc<Mutex<Option<*mut v8::Isolate>>>,
-}
-
-unsafe impl Send for IsolateHandle {}
-
-impl IsolateHandle {
-  /// Terminate the execution of any currently running javascript.
-  /// After terminating execution it is probably not wise to continue using
-  /// the isolate.
-  pub fn terminate_execution(&self) {
-    if let Some(isolate) = *self.shared_isolate.lock().unwrap() {
-      let isolate = unsafe { &mut *isolate };
-      isolate.terminate_execution();
-    }
-  }
+pub fn encode_message_as_json<'a>(
+  scope: &mut impl v8::ToLocal<'a>,
+  message: v8::Local<v8::Message>,
+) -> String {
+  let context = scope.get_current_context().unwrap();
+  let json_obj = bindings::encode_message_as_object(scope, message);
+  let json_string = v8::json::stringify(context, json_obj.into()).unwrap();
+  json_string.to_rust_string_lossy(scope)
 }
 
 pub fn js_check<T>(r: Result<T, ErrBox>) -> T {
@@ -944,7 +905,9 @@ pub mod tests {
     let tx_clone = tx.clone();
 
     let (mut isolate, _dispatch_count) = setup(Mode::Async);
-    let shared = isolate.shared_isolate_handle();
+    // TODO(piscisaureus): in rusty_v8, the `thread_safe_handle()` method
+    // should not require a mutable reference to `struct rusty_v8::Isolate`.
+    let shared = isolate.v8_isolate.as_mut().unwrap().thread_safe_handle();
 
     let t1 = std::thread::spawn(move || {
       // allow deno to boot and run
@@ -989,7 +952,9 @@ pub mod tests {
     let shared = {
       // isolate is dropped at the end of this block
       let (mut isolate, _dispatch_count) = setup(Mode::Async);
-      isolate.shared_isolate_handle()
+      // TODO(piscisaureus): in rusty_v8, the `thread_safe_handle()` method
+      // should not require a mutable reference to `struct rusty_v8::Isolate`.
+      isolate.v8_isolate.as_mut().unwrap().thread_safe_handle()
     };
 
     // this should not SEGFAULT
