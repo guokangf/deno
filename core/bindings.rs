@@ -2,6 +2,7 @@
 
 use crate::es_isolate::EsIsolate;
 use crate::isolate::encode_message_as_json;
+use crate::isolate::handle_exception;
 use crate::isolate::Isolate;
 use crate::isolate::ZeroCopyBuf;
 
@@ -287,7 +288,7 @@ pub extern "C" fn message_callback(
     .is_execution_terminating()
   {
     let undefined = v8::undefined(scope).into();
-    deno_isolate.handle_exception(scope, undefined);
+    handle_exception(scope, undefined, &mut deno_isolate.last_exception);
     return;
   }
 
