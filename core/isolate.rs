@@ -944,10 +944,11 @@ pub mod tests {
       std::thread::sleep(std::time::Duration::from_millis(100));
 
       // terminate execution
-      shared.terminate_execution();
+      let r = shared.terminate_execution();
+      assert_eq!(r, true);
 
       // allow shutdown
-      std::thread::sleep(std::time::Duration::from_millis(200));
+      std::thread::sleep(std::time::Duration::from_millis(100));
 
       // unless reported otherwise the test should fail after this point
       tx_clone.send(false).ok();
@@ -964,6 +965,17 @@ pub mod tests {
 
       // `execute()` returned, which means `terminate_execution()` worked.
       tx.send(true).ok();
+
+      // Cancel the execution-terminating exception in order to allow script
+      // execution again.
+      // TODO(piscisaureus): in rusty_v8, `cancel_terminate_execution()` should
+      // also be implemented on `struct Isolate`.
+      isolate
+        .v8_isolate
+        .as_mut()
+        .unwrap()
+        .thread_safe_handle()
+        .cancel_terminate_execution();
 
       // Make sure the isolate unusable again.
       isolate
