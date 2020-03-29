@@ -6,16 +6,12 @@
 // TODO Add tests like these:
 // https://github.com/indexzero/http-server/blob/master/test/http-server-test.js
 
-const { args, stat, readDir, open, exit } = Deno;
+const { args, stat, readdir, open, exit } = Deno;
 import { posix } from "../path/mod.ts";
-import {
-  listenAndServe,
-  ServerRequest,
-  setContentLength,
-  Response
-} from "./server.ts";
+import { listenAndServe, ServerRequest, Response } from "./server.ts";
 import { parse } from "../flags/mod.ts";
 import { assert } from "../testing/asserts.ts";
+import { setContentLength } from "./io.ts";
 
 interface EntryInfo {
   mode: string;
@@ -106,31 +102,31 @@ async function serveFile(
 ): Promise<Response> {
   const [file, fileInfo] = await Promise.all([open(filePath), stat(filePath)]);
   const headers = new Headers();
-  headers.set("content-length", fileInfo.len.toString());
+  headers.set("content-length", fileInfo.size.toString());
   headers.set("content-type", "text/plain; charset=utf-8");
 
   const res = {
     status: 200,
     body: file,
-    headers
+    headers,
   };
   return res;
 }
 
-// TODO: simplify this after deno.stat and deno.readDir are fixed
+// TODO: simplify this after deno.stat and deno.readdir are fixed
 async function serveDir(
   req: ServerRequest,
   dirPath: string
 ): Promise<Response> {
   const dirUrl = `/${posix.relative(target, dirPath)}`;
   const listEntry: EntryInfo[] = [];
-  const fileInfos = await readDir(dirPath);
+  const fileInfos = await readdir(dirPath);
   for (const fileInfo of fileInfos) {
     const filePath = posix.join(dirPath, fileInfo.name ?? "");
     const fileUrl = posix.join(dirUrl, fileInfo.name ?? "");
     if (fileInfo.name === "index.html" && fileInfo.isFile()) {
       // in case index.html as dir...
-      return await serveFile(req, filePath);
+      return serveFile(req, filePath);
     }
     // Yuck!
     let mode = null;
@@ -139,9 +135,9 @@ async function serveDir(
     } catch (e) {}
     listEntry.push({
       mode: modeToString(fileInfo.isDirectory(), mode),
-      size: fileInfo.isFile() ? fileLenToString(fileInfo.len) : "",
+      size: fileInfo.isFile() ? fileLenToString(fileInfo.size) : "",
       name: fileInfo.name ?? "",
-      url: fileUrl
+      url: fileUrl,
     });
   }
   listEntry.sort((a, b) =>
@@ -156,23 +152,23 @@ async function serveDir(
   const res = {
     status: 200,
     body: page,
-    headers
+    headers,
   };
   setContentLength(res);
   return res;
 }
 
-async function serveFallback(req: ServerRequest, e: Error): Promise<Response> {
+function serveFallback(req: ServerRequest, e: Error): Promise<Response> {
   if (e instanceof Deno.errors.NotFound) {
-    return {
+    return Promise.resolve({
       status: 404,
-      body: encoder.encode("Not found")
-    };
+      body: encoder.encode("Not found"),
+    });
   } else {
-    return {
+    return Promise.resolve({
       status: 500,
-      body: encoder.encode("Internal server error")
-    };
+      body: encoder.encode("Internal server error"),
+    });
   }
 }
 
@@ -262,19 +258,20 @@ function dirViewerTemplate(dirname: string, entries: EntryInfo[]): string {
               <th>Name</th>
             </tr>
             ${entries.map(
-              entry => html`
-                <tr>
-                  <td class="mode">
-                    ${entry.mode}
-                  </td>
-                  <td>
-                    ${entry.size}
-                  </td>
-                  <td>
-                    <a href="${entry.url}">${entry.name}</a>
-                  </td>
-                </tr>
-              `
+              (entry) =>
+                html`
+                  <tr>
+                    <td class="mode">
+                      ${entry.mode}
+                    </td>
+                    <td>
+                      ${entry.size}
+                    </td>
+                    <td>
+                      <a href="${entry.url}">${entry.name}</a>
+                    </td>
+                  </tr>
+                `
             )}
           </table>
         </main>

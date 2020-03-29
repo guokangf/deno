@@ -8,13 +8,9 @@ interface Version {
 export const version: Version = {
   deno: "",
   v8: "",
-  typescript: ""
+  typescript: "",
 };
 
-/**
- * Sets the deno, v8, and typescript versions and freezes the version object.
- * @internal
- */
 export function setVersions(
   denoVersion: string,
   v8Version: string,

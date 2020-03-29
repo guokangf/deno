@@ -2,7 +2,6 @@
 use super::dispatch_json::{Deserialize, JsonOp, Value};
 use crate::op_error::OpError;
 use crate::state::State;
-use atty;
 use deno_core::*;
 use std::collections::HashMap;
 use std::env;
@@ -12,7 +11,6 @@ use url::Url;
 
 pub fn init(i: &mut Isolate, s: &State) {
   i.register_op("op_exit", s.stateful_json_op(op_exit));
-  i.register_op("op_is_tty", s.stateful_json_op(op_is_tty));
   i.register_op("op_env", s.stateful_json_op(op_env));
   i.register_op("op_exec_path", s.stateful_json_op(op_exec_path));
   i.register_op("op_set_env", s.stateful_json_op(op_set_env));
@@ -51,6 +49,7 @@ fn op_get_dir(
     "picture" => dirs::picture_dir(),
     "public" => dirs::public_dir(),
     "template" => dirs::template_dir(),
+    "tmp" => Some(std::env::temp_dir()),
     "video" => dirs::video_dir(),
     _ => {
       return Err(
@@ -149,18 +148,6 @@ fn op_exit(
 ) -> Result<JsonOp, OpError> {
   let args: Exit = serde_json::from_value(args)?;
   std::process::exit(args.code)
-}
-
-fn op_is_tty(
-  _s: &State,
-  _args: Value,
-  _zero_copy: Option<ZeroCopyBuf>,
-) -> Result<JsonOp, OpError> {
-  Ok(JsonOp::Sync(json!({
-    "stdin": atty::is(atty::Stream::Stdin),
-    "stdout": atty::is(atty::Stream::Stdout),
-    "stderr": atty::is(atty::Stream::Stderr),
-  })))
 }
 
 fn op_loadavg(

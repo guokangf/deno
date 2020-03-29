@@ -3,21 +3,21 @@ import { assert, assertEquals, assertStrContains } from "../testing/asserts.ts";
 import { BufReader } from "../io/bufio.ts";
 import { TextProtoReader } from "../textproto/mod.ts";
 const { test } = Deno;
-
 let fileServer: Deno.Process;
 
 async function startFileServer(): Promise<void> {
   fileServer = Deno.run({
-    args: [
+    cmd: [
       Deno.execPath(),
       "run",
       "--allow-read",
       "--allow-net",
       "http/file_server.ts",
       ".",
-      "--cors"
+      "--cors",
     ],
-    stdout: "piped"
+    stdout: "piped",
+    stderr: "null",
   });
   // Once fileServer is ready it will write to its stdout.
   assert(fileServer.stdout != null);
@@ -78,6 +78,7 @@ test(async function serveFallback(): Promise<void> {
     assert(res.headers.has("access-control-allow-origin"));
     assert(res.headers.has("access-control-allow-headers"));
     assertEquals(res.status, 404);
+    res.body.close();
   } finally {
     killFileServer();
   }
@@ -90,11 +91,12 @@ test(async function serveWithUnorthodoxFilename(): Promise<void> {
     assert(res.headers.has("access-control-allow-origin"));
     assert(res.headers.has("access-control-allow-headers"));
     assertEquals(res.status, 200);
-
+    res.body.close();
     res = await fetch("http://localhost:4500/http/testdata/test%20file.txt");
     assert(res.headers.has("access-control-allow-origin"));
     assert(res.headers.has("access-control-allow-headers"));
     assertEquals(res.status, 200);
+    res.body.close();
   } finally {
     killFileServer();
   }
@@ -102,9 +104,9 @@ test(async function serveWithUnorthodoxFilename(): Promise<void> {
 
 test(async function servePermissionDenied(): Promise<void> {
   const deniedServer = Deno.run({
-    args: [Deno.execPath(), "run", "--allow-net", "http/file_server.ts"],
+    cmd: [Deno.execPath(), "run", "--allow-net", "http/file_server.ts"],
     stdout: "piped",
-    stderr: "piped"
+    stderr: "piped",
   });
   assert(deniedServer.stdout != null);
   const reader = new TextProtoReader(new BufReader(deniedServer.stdout));
@@ -114,7 +116,8 @@ test(async function servePermissionDenied(): Promise<void> {
   assert(s !== Deno.EOF && s.includes("server listening"));
 
   try {
-    await fetch("http://localhost:4500/");
+    const res = await fetch("http://localhost:4500/");
+    res.body.close();
     assertStrContains(
       (await errReader.readLine()) as string,
       "run again with the --allow-read flag"
@@ -128,8 +131,8 @@ test(async function servePermissionDenied(): Promise<void> {
 
 test(async function printHelp(): Promise<void> {
   const helpProcess = Deno.run({
-    args: [Deno.execPath(), "run", "http/file_server.ts", "--help"],
-    stdout: "piped"
+    cmd: [Deno.execPath(), "run", "http/file_server.ts", "--help"],
+    stdout: "piped",
   });
   assert(helpProcess.stdout != null);
   const r = new TextProtoReader(new BufReader(helpProcess.stdout));

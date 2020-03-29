@@ -22,6 +22,7 @@ use deno_core::Buf;
 use deno_core::ErrBox;
 use deno_core::ModuleSpecifier;
 use futures::future::FutureExt;
+use log::info;
 use regex::Regex;
 use serde_json::json;
 use std::collections::HashMap;
@@ -373,11 +374,12 @@ impl TsCompiler {
 
     let ts_compiler = self.clone();
 
-    eprintln!(
+    info!(
       "{} {}",
       colors::green("Compile".to_string()),
       module_url.to_string()
     );
+
     let msg = execute_in_thread(global_state.clone(), req_msg).await?;
 
     let json_str = std::str::from_utf8(&msg).unwrap();
@@ -551,7 +553,9 @@ impl SourceMapGetter for TsCompiler {
       .try_resolve_and_get_source_file(script_name)
       .and_then(|out| {
         str::from_utf8(&out.source_code).ok().and_then(|v| {
-          let lines: Vec<&str> = v.lines().collect();
+          // Do NOT use .lines(): it skips the terminating empty line.
+          // (due to internally using .split_terminator() instead of .split())
+          let lines: Vec<&str> = v.split('\n').collect();
           assert!(lines.len() > line);
           Some(lines[line].to_string())
         })
@@ -620,11 +624,7 @@ async fn execute_in_thread(
     WorkerEvent::Message(buf) => Ok(buf),
     WorkerEvent::Error(error) => Err(error),
   }?;
-  // Compiler worker finishes after one request
-  // so we should receive signal that channel was closed.
-  // Then close worker's channel and join the thread.
-  let event = handle.get_event().await;
-  assert!(event.is_none());
+  // Shutdown worker and wait for thread to finish
   handle.sender.close_channel();
   join_handle.join().unwrap();
   Ok(buf)

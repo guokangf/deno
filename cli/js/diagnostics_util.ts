@@ -7,7 +7,7 @@ import {
   Diagnostic,
   DiagnosticCategory,
   DiagnosticMessageChain,
-  DiagnosticItem
+  DiagnosticItem,
 } from "./diagnostics.ts";
 
 interface SourceInformation {
@@ -45,7 +45,7 @@ function getSourceInformation(
   const scriptResourceName = sourceFile.fileName;
   const {
     line: lineNumber,
-    character: startColumn
+    character: startColumn,
   } = sourceFile.getLineAndCharacterOfPosition(start);
   const endPosition = sourceFile.getLineAndCharacterOfPosition(start + length);
   const endColumn =
@@ -67,11 +67,10 @@ function getSourceInformation(
     lineNumber,
     scriptResourceName,
     startColumn,
-    endColumn
+    endColumn,
   };
 }
 
-/** Converts a TypeScript diagnostic message chain to a Deno one. */
 function fromDiagnosticMessageChain(
   messageChain: ts.DiagnosticMessageChain[] | undefined
 ): DiagnosticMessageChain[] | undefined {
@@ -84,12 +83,11 @@ function fromDiagnosticMessageChain(
       message,
       code,
       category: fromDiagnosticCategory(category),
-      next: fromDiagnosticMessageChain(next)
+      next: fromDiagnosticMessageChain(next),
     };
   });
 }
 
-/** Parse out information from a TypeScript diagnostic structure. */
 function parseDiagnostic(
   item: ts.Diagnostic | ts.DiagnosticRelatedInformation
 ): DiagnosticItem {
@@ -99,7 +97,7 @@ function parseDiagnostic(
     code,
     file,
     start: startPosition,
-    length
+    length,
   } = item;
   const sourceInfo =
     file && startPosition && length
@@ -124,14 +122,12 @@ function parseDiagnostic(
     code,
     category,
     startPosition,
-    endPosition
+    endPosition,
   };
 
   return sourceInfo ? { ...base, ...sourceInfo } : base;
 }
 
-/** Convert a diagnostic related information array into a Deno diagnostic
- * array. */
 function parseRelatedInformation(
   relatedInformation: readonly ts.DiagnosticRelatedInformation[]
 ): DiagnosticItem[] {
@@ -142,7 +138,6 @@ function parseRelatedInformation(
   return result;
 }
 
-/** Convert TypeScript diagnostics to Deno diagnostics. */
 export function fromTypeScriptDiagnostic(
   diagnostics: readonly ts.Diagnostic[]
 ): Diagnostic {

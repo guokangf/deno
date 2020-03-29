@@ -21,11 +21,11 @@ export class BufferFullError extends Error {
   }
 }
 
-export class UnexpectedEOFError extends Error {
-  name = "UnexpectedEOFError";
+export class PartialReadError extends Deno.errors.UnexpectedEof {
+  name = "PartialReadError";
   partial?: Uint8Array;
   constructor() {
-    super("Unexpected EOF");
+    super("Encountered UnexpectedEof, data only partially read");
   }
 }
 
@@ -178,7 +178,7 @@ export class BufReader implements Reader {
           if (bytesRead === 0) {
             return Deno.EOF;
           } else {
-            throw new UnexpectedEOFError();
+            throw new PartialReadError();
           }
         }
         bytesRead += rr;
@@ -212,8 +212,9 @@ export class BufReader implements Reader {
    * For simple uses, a Scanner may be more convenient.
    */
   async readString(delim: string): Promise<string | Deno.EOF> {
-    if (delim.length !== 1)
+    if (delim.length !== 1) {
       throw new Error("Delimiter should be a single character");
+    }
     const buffer = await this.readSlice(delim.charCodeAt(0));
     if (buffer == Deno.EOF) return Deno.EOF;
     return new TextDecoder().decode(buffer);
@@ -602,6 +603,7 @@ export async function* readStringDelim(
 }
 
 /** Read strings line-by-line from a Reader. */
+// eslint-disable-next-line require-await
 export async function* readLines(
   reader: Reader
 ): AsyncIterableIterator<string> {

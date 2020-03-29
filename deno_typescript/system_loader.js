@@ -2,84 +2,86 @@
 
 // This is a specialised implementation of a System module loader.
 
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-let System;
-let __inst;
+// @ts-nocheck
+/* eslint-disable */
+let System, __instantiateAsync, __instantiate;
 
 (() => {
-  const mMap = new Map();
+  const r = new Map();
+
   System = {
-    register(id, deps, f) {
-      mMap.set(id, {
-        id,
-        deps,
-        f,
-        exp: {}
-      });
-    }
+    register(id, d, f) {
+      r.set(id, { d, f, exp: {} });
+    },
   };
 
-  const gC = (data, main) => {
-    const { id } = data;
+  function gC(id, main) {
     return {
       id,
-      import: async id => mMap.get(id)?.exp,
-      meta: { url: id, main }
+      import: async (id) => r.get(id)?.exp,
+      meta: { url: id, main },
     };
-  };
+  }
 
-  const gE = data => {
-    const { exp } = data;
-    return (id, value) => {
-      const values = typeof id === "string" ? { [id]: value } : id;
-      for (const [id, value] of Object.entries(values)) {
+  function gE(exp) {
+    return (id, v) => {
+      v = typeof id === "string" ? { [id]: v } : id;
+      for (const [id, value] of Object.entries(v)) {
         Object.defineProperty(exp, id, {
           value,
           writable: true,
-          enumerable: true
+          enumerable: true,
         });
       }
     };
+  }
+
+  function rF(main) {
+    for (const [id, m] of r.entries()) {
+      const { f, exp } = m;
+      const { execute: e, setters: s } = f(gE(exp), gC(id, id === main));
+      delete m.f;
+      m.e = e;
+      m.s = s;
+    }
+  }
+
+  async function gExpA(id) {
+    if (!r.has(id)) return;
+    const m = r.get(id);
+    if (m.s) {
+      const { d, e, s } = m;
+      delete m.s;
+      delete m.e;
+      for (let i = 0; i < s.length; i++) s[i](await gExpA(d[i]));
+      const r = e();
+      if (r) await r;
+    }
+    return m.exp;
+  }
+
+  function gExp(id) {
+    if (!r.has(id)) return;
+    const m = r.get(id);
+    if (m.s) {
+      const { d, e, s } = m;
+      delete m.s;
+      delete m.e;
+      for (let i = 0; i < s.length; i++) s[i](gExp(d[i]));
+      e();
+    }
+    return m.exp;
+  }
+
+  __instantiateAsync = async (m) => {
+    System = __instantiateAsync = __instantiate = undefined;
+    rF(m);
+    return gExpA(m);
   };
 
-  const iQ = [];
-
-  const enq = ids => {
-    for (const id of ids) {
-      if (!iQ.includes(id)) {
-        const { deps } = mMap.get(id);
-        iQ.push(id);
-        enq(deps);
-      }
-    }
-  };
-
-  const dr = async main => {
-    const rQ = [];
-    let id;
-    while ((id = iQ.pop())) {
-      const m = mMap.get(id);
-      const { f } = m;
-      if (!f) {
-        return;
-      }
-      rQ.push([m.deps, f(gE(m), gC(m, id === main))]);
-      m.f = undefined;
-    }
-    let r;
-    while ((r = rQ.shift())) {
-      const [deps, { execute, setters }] = r;
-      for (let i = 0; i < deps.length; i++) setters[i](mMap.get(deps[i])?.exp);
-      const e = execute();
-      if (e) await e;
-    }
-  };
-
-  __inst = async id => {
-    System = undefined;
-    __inst = undefined;
-    enq([id]);
-    await dr(id);
-    return mMap.get(id)?.exp;
+  __instantiate = (m) => {
+    System = __instantiateAsync = __instantiate = undefined;
+    rF(m);
+    return gExp(m);
   };
 })();

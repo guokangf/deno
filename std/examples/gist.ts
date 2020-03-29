@@ -26,8 +26,8 @@ if (parsedArgs._.length === 0) {
 
 const files: Record<string, { content: string }> = {};
 for (const filename of parsedArgs._) {
-  const base = pathBase(filename);
-  const content = await Deno.readFile(filename);
+  const base = pathBase(filename as string);
+  const content = await Deno.readFile(filename as string);
   const contentStr = new TextDecoder().decode(content);
   files[base] = { content: contentStr };
 }
@@ -35,7 +35,7 @@ for (const filename of parsedArgs._) {
 const content = {
   description: parsedArgs.title || parsedArgs.t || "Example",
   public: false,
-  files: files
+  files: files,
 };
 const body = JSON.stringify(content);
 
@@ -44,9 +44,9 @@ const res = await fetch("https://api.github.com/gists", {
   headers: [
     ["Content-Type", "application/json"],
     ["User-Agent", "Deno-Gist"],
-    ["Authorization", `token ${token}`]
+    ["Authorization", `token ${token}`],
   ],
-  body
+  body,
 });
 
 if (res.ok) {

@@ -5,7 +5,7 @@ import {
   assert,
   assertEquals,
   assertThrows,
-  assertThrowsAsync
+  assertThrowsAsync,
 } from "../testing/asserts.ts";
 const { test } = Deno;
 import * as path from "../path/mod.ts";
@@ -15,7 +15,7 @@ import {
   MultipartWriter,
   isFormFile,
   matchAfterPrefix,
-  scanUntilBoundary
+  scanUntilBoundary,
 } from "./multipart.ts";
 import { StringWriter } from "../io/writers.ts";
 
@@ -98,6 +98,7 @@ test(async function multipartMultipartWriter(): Promise<void> {
   const f = await open(path.resolve("./mime/testdata/sample.txt"), "r");
   await mw.writeFile("file", "sample.txt", f);
   await mw.close();
+  f.close();
 });
 
 test(function multipartMultipartWriter2(): void {
@@ -185,6 +186,7 @@ test(async function multipartMultipartReader(): Promise<void> {
   const file = form["file"] as FormFile;
   assertEquals(isFormFile(file), true);
   assert(file.content !== void 0);
+  o.close();
 });
 
 test(async function multipartMultipartReader2(): Promise<void> {
@@ -211,5 +213,6 @@ test(async function multipartMultipartReader2(): Promise<void> {
     if (file.tempfile) {
       await remove(file.tempfile);
     }
+    o.close();
   }
 });

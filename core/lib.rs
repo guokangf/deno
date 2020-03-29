@@ -1,14 +1,12 @@
 // Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
 
 #[macro_use]
-extern crate log;
-extern crate futures;
-extern crate libc;
-#[macro_use]
 extern crate downcast_rs;
-extern crate rusty_v8;
+extern crate futures;
 #[macro_use]
 extern crate lazy_static;
+#[macro_use]
+extern crate log;
 
 mod any_error;
 mod bindings;
@@ -23,7 +21,7 @@ mod plugins;
 mod resources;
 mod shared_queue;
 
-use rusty_v8 as v8;
+pub use rusty_v8 as v8;
 
 pub use crate::any_error::*;
 pub use crate::es_isolate::*;

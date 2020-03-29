@@ -15,15 +15,15 @@ import {
   unmask,
   writeFrame,
   createWebSocket,
-  SocketClosedError
 } from "./mod.ts";
 import { encode, decode } from "../strings/mod.ts";
 import Writer = Deno.Writer;
 import Reader = Deno.Reader;
 import Conn = Deno.Conn;
 import Buffer = Deno.Buffer;
+import { delay } from "../util/async.ts";
 
-test(async function wsReadUnmaskedTextFrame(): Promise<void> {
+test("[ws] read unmasked text frame", async () => {
   // unmasked single text frame with payload "Hello"
   const buf = new BufReader(
     new Buffer(new Uint8Array([0x81, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]))
@@ -35,7 +35,7 @@ test(async function wsReadUnmaskedTextFrame(): Promise<void> {
   assertEquals(frame.isLastFrame, true);
 });
 
-test(async function wsReadMaskedTextFrame(): Promise<void> {
+test("[ws] read masked text frame", async () => {
   // a masked single text frame with payload "Hello"
   const buf = new BufReader(
     new Buffer(
@@ -50,7 +50,7 @@ test(async function wsReadMaskedTextFrame(): Promise<void> {
         0x9f,
         0x4d,
         0x51,
-        0x58
+        0x58,
       ])
     )
   );
@@ -61,7 +61,7 @@ test(async function wsReadMaskedTextFrame(): Promise<void> {
   assertEquals(frame.isLastFrame, true);
 });
 
-test(async function wsReadUnmaskedSplitTextFrames(): Promise<void> {
+test("[ws] read unmasked split text frames", async () => {
   const buf1 = new BufReader(
     new Buffer(new Uint8Array([0x01, 0x03, 0x48, 0x65, 0x6c]))
   );
@@ -80,7 +80,7 @@ test(async function wsReadUnmaskedSplitTextFrames(): Promise<void> {
   assertEquals(new Buffer(f2.payload).toString(), "lo");
 });
 
-test(async function wsReadUnmaskedPingPongFrame(): Promise<void> {
+test("[ws] read unmasked ping / pong frame", async () => {
   // unmasked ping with payload "Hello"
   const buf = new BufReader(
     new Buffer(new Uint8Array([0x89, 0x05, 0x48, 0x65, 0x6c, 0x6c, 0x6f]))
@@ -88,24 +88,9 @@ test(async function wsReadUnmaskedPingPongFrame(): Promise<void> {
   const ping = await readFrame(buf);
   assertEquals(ping.opcode, OpCode.Ping);
   assertEquals(new Buffer(ping.payload).toString(), "Hello");
-
-  const buf2 = new BufReader(
-    new Buffer(
-      new Uint8Array([
-        0x8a,
-        0x85,
-        0x37,
-        0xfa,
-        0x21,
-        0x3d,
-        0x7f,
-        0x9f,
-        0x4d,
-        0x51,
-        0x58
-      ])
-    )
-  );
+  // prettier-ignore
+  const pongFrame= [0x8a, 0x85, 0x37, 0xfa, 0x21, 0x3d, 0x7f, 0x9f, 0x4d, 0x51, 0x58]
+  const buf2 = new BufReader(new Buffer(new Uint8Array(pongFrame)));
   const pong = await readFrame(buf2);
   assertEquals(pong.opcode, OpCode.Pong);
   assert(pong.mask !== undefined);
@@ -113,7 +98,7 @@ test(async function wsReadUnmaskedPingPongFrame(): Promise<void> {
   assertEquals(new Buffer(pong.payload).toString(), "Hello");
 });
 
-test(async function wsReadUnmaskedBigBinaryFrame(): Promise<void> {
+test("[ws] read unmasked big binary frame", async () => {
   const payloadLength = 0x100;
   const a = [0x82, 0x7e, 0x01, 0x00];
   for (let i = 0; i < payloadLength; i++) {
@@ -127,7 +112,7 @@ test(async function wsReadUnmaskedBigBinaryFrame(): Promise<void> {
   assertEquals(bin.payload.length, payloadLength);
 });
 
-test(async function wsReadUnmaskedBigBigBinaryFrame(): Promise<void> {
+test("[ws] read unmasked bigger binary frame", async () => {
   const payloadLength = 0x10000;
   const a = [0x82, 0x7f, 0x00, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00];
   for (let i = 0; i < payloadLength; i++) {
@@ -141,18 +126,18 @@ test(async function wsReadUnmaskedBigBigBinaryFrame(): Promise<void> {
   assertEquals(bin.payload.length, payloadLength);
 });
 
-test(async function wsCreateSecAccept(): Promise<void> {
+test("[ws] createSecAccept", () => {
   const nonce = "dGhlIHNhbXBsZSBub25jZQ==";
   const d = createSecAccept(nonce);
   assertEquals(d, "s3pPLMBiTxaQ9kYGzzhZRbK+xOo=");
 });
 
-test(function wsAcceptable(): void {
+test("[ws] acceptable", () => {
   const ret = acceptable({
     headers: new Headers({
       upgrade: "websocket",
-      "sec-websocket-key": "aaa"
-    })
+      "sec-websocket-key": "aaa",
+    }),
   });
   assertEquals(ret, true);
 
@@ -163,44 +148,44 @@ test(function wsAcceptable(): void {
         ["host", "127.0.0.1:9229"],
         [
           "sec-websocket-extensions",
-          "permessage-deflate; client_max_window_bits"
+          "permessage-deflate; client_max_window_bits",
         ],
         ["sec-websocket-key", "dGhlIHNhbXBsZSBub25jZQ=="],
         ["sec-websocket-version", "13"],
-        ["upgrade", "WebSocket"]
-      ])
+        ["upgrade", "WebSocket"],
+      ]),
     })
   );
 });
 
-test(function wsAcceptableInvalid(): void {
+test("[ws] acceptable should return false when headers invalid", () => {
   assertEquals(
     acceptable({
-      headers: new Headers({ "sec-websocket-key": "aaa" })
+      headers: new Headers({ "sec-websocket-key": "aaa" }),
     }),
     false
   );
   assertEquals(
     acceptable({
-      headers: new Headers({ upgrade: "websocket" })
+      headers: new Headers({ upgrade: "websocket" }),
     }),
     false
   );
   assertEquals(
     acceptable({
-      headers: new Headers({ upgrade: "invalid", "sec-websocket-key": "aaa" })
+      headers: new Headers({ upgrade: "invalid", "sec-websocket-key": "aaa" }),
     }),
     false
   );
   assertEquals(
     acceptable({
-      headers: new Headers({ upgrade: "websocket", "sec-websocket-ky": "" })
+      headers: new Headers({ upgrade: "websocket", "sec-websocket-ky": "" }),
     }),
     false
   );
 });
 
-test("connectWebSocket should throw invalid scheme of url", async (): Promise<
+test("[ws] connectWebSocket should throw invalid scheme of url", async (): Promise<
   void
 > => {
   await assertThrowsAsync(
@@ -210,7 +195,7 @@ test("connectWebSocket should throw invalid scheme of url", async (): Promise<
   );
 });
 
-test(async function wsWriteReadMaskedFrame(): Promise<void> {
+test("[ws] write and read masked frame", async () => {
   const mask = new Uint8Array([0, 1, 2, 3]);
   const msg = "hello";
   const buf = new Buffer();
@@ -220,7 +205,7 @@ test(async function wsWriteReadMaskedFrame(): Promise<void> {
       isLastFrame: true,
       mask,
       opcode: OpCode.TextFrame,
-      payload: encode(msg)
+      payload: encode(msg),
     },
     buf
   );
@@ -232,9 +217,7 @@ test(async function wsWriteReadMaskedFrame(): Promise<void> {
   assertEquals(frame.payload, encode(msg));
 });
 
-test("handshake should not send search when it's empty", async function wsHandshakeWithEmptySearch(): Promise<
-  void
-> {
+test("[ws] handshake should not send search when it's empty", async () => {
   const writer = new Buffer();
   const reader = new Buffer(encode("HTTP/1.1 400\r\n"));
 
@@ -255,7 +238,7 @@ test("handshake should not send search when it's empty", async function wsHandsh
   assertEquals(statusLine, "GET / HTTP/1.1");
 });
 
-test("handshake should send search correctly", async function wsHandshakeWithSearch(): Promise<
+test("[ws] handshake should send search correctly", async function wsHandshakeWithSearch(): Promise<
   void
 > {
   const writer = new Buffer();
@@ -278,6 +261,18 @@ test("handshake should send search correctly", async function wsHandshakeWithSea
   assertEquals(statusLine, "GET /?a=1 HTTP/1.1");
 });
 
+test("[ws] ws.close() should use 1000 as close code", async () => {
+  const buf = new Buffer();
+  const bufr = new BufReader(buf);
+  const conn = dummyConn(buf, buf);
+  const ws = createWebSocket({ conn });
+  await ws.close();
+  const frame = await readFrame(bufr);
+  assertEquals(frame.opcode, OpCode.Close);
+  const code = (frame.payload[0] << 8) | frame.payload[1];
+  assertEquals(code, 1000);
+});
+
 function dummyConn(r: Reader, w: Writer): Conn {
   return {
     rid: -1,
@@ -287,76 +282,80 @@ function dummyConn(r: Reader, w: Writer): Conn {
     write: (x): Promise<number> => w.write(x),
     close: (): void => {},
     localAddr: { transport: "tcp", hostname: "0.0.0.0", port: 0 },
-    remoteAddr: { transport: "tcp", hostname: "0.0.0.0", port: 0 }
+    remoteAddr: { transport: "tcp", hostname: "0.0.0.0", port: 0 },
   };
 }
 
 function delayedWriter(ms: number, dest: Writer): Writer {
   return {
     write(p: Uint8Array): Promise<number> {
-      return new Promise<number>(resolve => {
+      return new Promise<number>((resolve) => {
         setTimeout(async (): Promise<void> => {
           resolve(await dest.write(p));
         }, ms);
       });
-    }
+    },
   };
 }
-test("WebSocket.send(), WebSocket.ping() should be exclusive", async (): Promise<
-  void
-> => {
-  const buf = new Buffer();
-  const conn = dummyConn(new Buffer(), delayedWriter(1, buf));
-  const sock = createWebSocket({ conn });
-  // Ensure send call
-  await Promise.all([
-    sock.send("first"),
-    sock.send("second"),
-    sock.ping(),
-    sock.send(new Uint8Array([3]))
-  ]);
-  const bufr = new BufReader(buf);
-  const first = await readFrame(bufr);
-  const second = await readFrame(bufr);
-  const ping = await readFrame(bufr);
-  const third = await readFrame(bufr);
-  assertEquals(first.opcode, OpCode.TextFrame);
-  assertEquals(decode(first.payload), "first");
-  assertEquals(first.opcode, OpCode.TextFrame);
-  assertEquals(decode(second.payload), "second");
-  assertEquals(ping.opcode, OpCode.Ping);
-  assertEquals(third.opcode, OpCode.BinaryFrame);
-  assertEquals(bytes.equal(third.payload, new Uint8Array([3])), true);
+test({
+  name: "[ws] WebSocket.send(), WebSocket.ping() should be exclusive",
+  fn: async (): Promise<void> => {
+    const buf = new Buffer();
+    const conn = dummyConn(new Buffer(), delayedWriter(1, buf));
+    const sock = createWebSocket({ conn });
+    // Ensure send call
+    await Promise.all([
+      sock.send("first"),
+      sock.send("second"),
+      sock.ping(),
+      sock.send(new Uint8Array([3])),
+    ]);
+    const bufr = new BufReader(buf);
+    const first = await readFrame(bufr);
+    const second = await readFrame(bufr);
+    const ping = await readFrame(bufr);
+    const third = await readFrame(bufr);
+    assertEquals(first.opcode, OpCode.TextFrame);
+    assertEquals(decode(first.payload), "first");
+    assertEquals(first.opcode, OpCode.TextFrame);
+    assertEquals(decode(second.payload), "second");
+    assertEquals(ping.opcode, OpCode.Ping);
+    assertEquals(third.opcode, OpCode.BinaryFrame);
+    assertEquals(bytes.equal(third.payload, new Uint8Array([3])), true);
+  },
 });
 
-test(function createSecKeyHasCorrectLength(): void {
+test("[ws] createSecKeyHasCorrectLength", () => {
   // Note: relies on --seed=86 being passed to deno to reproduce failure in
   // #4063.
   const secKey = createSecKey();
   assertEquals(atob(secKey).length, 16);
 });
 
-test("WebSocket should throw SocketClosedError when peer closed connection without close frame", async () => {
+test("[ws] WebSocket should throw `Deno.errors.ConnectionReset` when peer closed connection without close frame", async () => {
   const buf = new Buffer();
   const eofReader: Deno.Reader = {
-    async read(_: Uint8Array): Promise<number | Deno.EOF> {
-      return Deno.EOF;
-    }
+    read(_: Uint8Array): Promise<number | Deno.EOF> {
+      return Promise.resolve(Deno.EOF);
+    },
   };
   const conn = dummyConn(eofReader, buf);
   const sock = createWebSocket({ conn });
   sock.closeForce();
-  await assertThrowsAsync(() => sock.send("hello"), SocketClosedError);
-  await assertThrowsAsync(() => sock.ping(), SocketClosedError);
-  await assertThrowsAsync(() => sock.close(0), SocketClosedError);
+  await assertThrowsAsync(
+    () => sock.send("hello"),
+    Deno.errors.ConnectionReset
+  );
+  await assertThrowsAsync(() => sock.ping(), Deno.errors.ConnectionReset);
+  await assertThrowsAsync(() => sock.close(0), Deno.errors.ConnectionReset);
 });
 
-test("WebSocket shouldn't throw UnexpectedEOFError on recive()", async () => {
+test("[ws] WebSocket shouldn't throw `Deno.errors.UnexpectedEof` on recive()", async () => {
   const buf = new Buffer();
   const eofReader: Deno.Reader = {
-    async read(_: Uint8Array): Promise<number | Deno.EOF> {
-      return Deno.EOF;
-    }
+    read(_: Uint8Array): Promise<number | Deno.EOF> {
+      return Promise.resolve(Deno.EOF);
+    },
   };
   const conn = dummyConn(eofReader, buf);
   const sock = createWebSocket({ conn });
@@ -366,29 +365,36 @@ test("WebSocket shouldn't throw UnexpectedEOFError on recive()", async () => {
   assertEquals(done, true);
 });
 
-test("WebSocket should reject sending promise when connection reset forcely", async () => {
-  const buf = new Buffer();
-  let timer: number | undefined;
-  const lazyWriter: Deno.Writer = {
-    async write(_: Uint8Array): Promise<number> {
-      return new Promise(resolve => {
-        timer = setTimeout(() => resolve(0), 1000);
-      });
-    }
-  };
-  const conn = dummyConn(buf, lazyWriter);
-  const sock = createWebSocket({ conn });
-  const onError = (e: unknown): unknown => e;
-  const p = Promise.all([
-    sock.send("hello").catch(onError),
-    sock.send(new Uint8Array([1, 2])).catch(onError),
-    sock.ping().catch(onError)
-  ]);
-  sock.closeForce();
-  assertEquals(sock.isClosed, true);
-  const [a, b, c] = await p;
-  assert(a instanceof SocketClosedError);
-  assert(b instanceof SocketClosedError);
-  assert(c instanceof SocketClosedError);
-  clearTimeout(timer);
+test({
+  name:
+    "[ws] WebSocket should reject sending promise when connection reset forcely",
+  fn: async () => {
+    const buf = new Buffer();
+    let timer: number | undefined;
+    const lazyWriter: Deno.Writer = {
+      write(_: Uint8Array): Promise<number> {
+        return new Promise((resolve) => {
+          timer = setTimeout(() => resolve(0), 1000);
+        });
+      },
+    };
+    const conn = dummyConn(buf, lazyWriter);
+    const sock = createWebSocket({ conn });
+    const onError = (e: unknown): unknown => e;
+    const p = Promise.all([
+      sock.send("hello").catch(onError),
+      sock.send(new Uint8Array([1, 2])).catch(onError),
+      sock.ping().catch(onError),
+    ]);
+    sock.closeForce();
+    assertEquals(sock.isClosed, true);
+    const [a, b, c] = await p;
+    assert(a instanceof Deno.errors.ConnectionReset);
+    assert(b instanceof Deno.errors.ConnectionReset);
+    assert(c instanceof Deno.errors.ConnectionReset);
+    clearTimeout(timer);
+    // Wait for another event loop turn for `timeout` op promise
+    // to resolve, otherwise we'll get "op leak".
+    await delay(10);
+  },
 });

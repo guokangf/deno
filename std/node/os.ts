@@ -180,9 +180,9 @@ export function setPriority(pid: number, priority?: number): void {
   notImplemented(SEE_GITHUB_ISSUE);
 }
 
-/** Not yet implemented */
-export function tmpdir(): string {
-  notImplemented(SEE_GITHUB_ISSUE);
+/** Returns the operating system's default directory for temporary files as a string. */
+export function tmpdir(): string | null {
+  return Deno.dir("tmp");
 }
 
 /** Not yet implemented */
@@ -219,7 +219,7 @@ export const constants = {
   signals: Deno.Signal,
   priority: {
     // see https://nodejs.org/docs/latest-v12.x/api/os.html#os_priority_constants
-  }
+  },
 };
 
 export const EOL = Deno.build.os == "win" ? fsEOL.CRLF : fsEOL.LF;

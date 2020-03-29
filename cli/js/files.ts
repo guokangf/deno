@@ -8,230 +8,72 @@ import {
   SeekMode,
   SyncReader,
   SyncWriter,
-  SyncSeeker
+  SyncSeeker,
 } from "./io.ts";
-import { sendAsyncMinimal, sendSyncMinimal } from "./dispatch_minimal.ts";
+import { close } from "./ops/resources.ts";
+import { read, readSync, write, writeSync } from "./ops/io.ts";
+import { seek, seekSync } from "./ops/fs/seek.ts";
+export { seek, seekSync } from "./ops/fs/seek.ts";
 import {
-  sendSync as sendSyncJson,
-  sendAsync as sendAsyncJson
-} from "./dispatch_json.ts";
-import { OPS_CACHE } from "./runtime.ts";
+  open as opOpen,
+  openSync as opOpenSync,
+  OpenOptions,
+  OpenMode,
+} from "./ops/fs/open.ts";
+export { OpenOptions, OpenMode } from "./ops/fs/open.ts";
 
-// This is done because read/write are extremely performance sensitive.
-let OP_READ = -1;
-let OP_WRITE = -1;
+export function openSync(path: string, options?: OpenOptions): File;
+export function openSync(path: string, openMode?: OpenMode): File;
 
-/** Open a file and return an instance of the `File` object
- *  synchronously.
- *
- *       const file = Deno.openSync("/foo/bar.txt", { read: true, write: true });
- */
-export function openSync(filename: string, capability?: OpenOptions): File;
-/** Open a file and return an instance of the `File` object
- *  synchronously.
- *
- *       const file = Deno.openSync("/foo/bar.txt", "r");
- */
-export function openSync(filename: string, mode?: OpenMode): File;
-
+/**@internal*/
 export function openSync(
-  filename: string,
+  path: string,
   modeOrOptions: OpenOptions | OpenMode = "r"
 ): File {
-  let mode = null;
-  let options = null;
+  let openMode = undefined;
+  let options = undefined;
 
   if (typeof modeOrOptions === "string") {
-    mode = modeOrOptions;
+    openMode = modeOrOptions;
   } else {
     checkOpenOptions(modeOrOptions);
-    options = modeOrOptions;
+    options = modeOrOptions as OpenOptions;
   }
 
-  const rid = sendSyncJson("op_open", { filename, options, mode });
+  const rid = opOpenSync(path, openMode as OpenMode, options);
   return new File(rid);
 }
 
-/** Open a file and return an instance of the `File` object.
- *
- *     const file = await Deno.open("/foo/bar.txt", { read: true, write: true });
- */
-export async function open(
-  filename: string,
-  options?: OpenOptions
-): Promise<File>;
-
-/** Open a file and return an instance of the `File` object.
- *
- *     const file = await Deno.open("/foo/bar.txt, "w+");
- */
-export async function open(filename: string, mode?: OpenMode): Promise<File>;
+export async function open(path: string, options?: OpenOptions): Promise<File>;
+export async function open(path: string, openMode?: OpenMode): Promise<File>;
 
 /**@internal*/
 export async function open(
-  filename: string,
+  path: string,
   modeOrOptions: OpenOptions | OpenMode = "r"
 ): Promise<File> {
-  let mode = null;
-  let options = null;
+  let openMode = undefined;
+  let options = undefined;
 
   if (typeof modeOrOptions === "string") {
-    mode = modeOrOptions;
+    openMode = modeOrOptions;
   } else {
     checkOpenOptions(modeOrOptions);
-    options = modeOrOptions;
+    options = modeOrOptions as OpenOptions;
   }
 
-  const rid = await sendAsyncJson("op_open", {
-    filename,
-    options,
-    mode
-  });
+  const rid = await opOpen(path, openMode as OpenMode, options);
   return new File(rid);
 }
 
-/** Creates a file if none exists or truncates an existing file and returns
- *  an instance of the `File` object synchronously.
- *
- *       const file = Deno.createSync("/foo/bar.txt");
- */
-export function createSync(filename: string): File {
-  return openSync(filename, "w+");
+export function createSync(path: string): File {
+  return openSync(path, "w+");
 }
 
-/** Creates a file if none exists or truncates an existing file and returns
- *  an instance of the `File` object.
- *
- *       const file = await Deno.create("/foo/bar.txt");
- */
-export function create(filename: string): Promise<File> {
-  return open(filename, "w+");
+export function create(path: string): Promise<File> {
+  return open(path, "w+");
 }
 
-/** Read synchronously from a file ID into an array buffer.
- *
- * Return `number | EOF` for the operation.
- *
- *      const file = Deno.openSync("/foo/bar.txt");
- *      const buf = new Uint8Array(100);
- *      const nread = Deno.readSync(file.rid, buf);
- *      const text = new TextDecoder().decode(buf);
- *
- */
-export function readSync(rid: number, p: Uint8Array): number | EOF {
-  if (p.length == 0) {
-    return 0;
-  }
-  if (OP_READ < 0) {
-    OP_READ = OPS_CACHE["op_read"];
-  }
-  const nread = sendSyncMinimal(OP_READ, rid, p);
-  if (nread < 0) {
-    throw new Error("read error");
-  } else if (nread == 0) {
-    return EOF;
-  } else {
-    return nread;
-  }
-}
-
-/** Read from a file ID into an array buffer.
- *
- * Resolves with the `number | EOF` for the operation.
- *
- *       const file = await Deno.open("/foo/bar.txt");
- *       const buf = new Uint8Array(100);
- *       const nread = await Deno.read(file.rid, buf);
- *       const text = new TextDecoder().decode(buf);
- */
-export async function read(rid: number, p: Uint8Array): Promise<number | EOF> {
-  if (p.length == 0) {
-    return 0;
-  }
-  if (OP_READ < 0) {
-    OP_READ = OPS_CACHE["op_read"];
-  }
-  const nread = await sendAsyncMinimal(OP_READ, rid, p);
-  if (nread < 0) {
-    throw new Error("read error");
-  } else if (nread == 0) {
-    return EOF;
-  } else {
-    return nread;
-  }
-}
-
-/** Write synchronously to the file ID the contents of the array buffer.
- *
- * Resolves with the number of bytes written.
- *
- *       const encoder = new TextEncoder();
- *       const data = encoder.encode("Hello world\n");
- *       const file = Deno.openSync("/foo/bar.txt");
- *       Deno.writeSync(file.rid, data);
- */
-export function writeSync(rid: number, p: Uint8Array): number {
-  if (OP_WRITE < 0) {
-    OP_WRITE = OPS_CACHE["op_write"];
-  }
-  const result = sendSyncMinimal(OP_WRITE, rid, p);
-  if (result < 0) {
-    throw new Error("write error");
-  } else {
-    return result;
-  }
-}
-
-/** Write to the file ID the contents of the array buffer.
- *
- * Resolves with the number of bytes written.
- *
- *      const encoder = new TextEncoder();
- *      const data = encoder.encode("Hello world\n");
- *      const file = await Deno.open("/foo/bar.txt");
- *      await Deno.write(file.rid, data);
- *
- */
-export async function write(rid: number, p: Uint8Array): Promise<number> {
-  if (OP_WRITE < 0) {
-    OP_WRITE = OPS_CACHE["op_write"];
-  }
-  const result = await sendAsyncMinimal(OP_WRITE, rid, p);
-  if (result < 0) {
-    throw new Error("write error");
-  } else {
-    return result;
-  }
-}
-
-/** Seek a file ID synchronously to the given offset under mode given by `whence`.
- *
- *       const file = Deno.openSync("/foo/bar.txt");
- *       Deno.seekSync(file.rid, 0, 0);
- */
-export function seekSync(rid: number, offset: number, whence: SeekMode): void {
-  sendSyncJson("op_seek", { rid, offset, whence });
-}
-
-/** Seek a file ID to the given offset under mode given by `whence`.
- *
- *      const file = await Deno.open("/foo/bar.txt");
- *      await Deno.seek(file.rid, 0, 0);
- */
-export async function seek(
-  rid: number,
-  offset: number,
-  whence: SeekMode
-): Promise<void> {
-  await sendAsyncJson("op_seek", { rid, offset, whence });
-}
-
-/** Close the file ID. */
-export function close(rid: number): void {
-  sendSyncJson("op_close", { rid });
-}
-
-/** The Deno abstraction for reading and writing files. */
 export class File
   implements
     Reader,
@@ -259,11 +101,11 @@ export class File
     return readSync(this.rid, p);
   }
 
-  seek(offset: number, whence: SeekMode): Promise<void> {
+  seek(offset: number, whence: SeekMode): Promise<number> {
     return seek(this.rid, offset, whence);
   }
 
-  seekSync(offset: number, whence: SeekMode): void {
+  seekSync(offset: number, whence: SeekMode): number {
     return seekSync(this.rid, offset, whence);
   }
 
@@ -272,75 +114,12 @@ export class File
   }
 }
 
-/** An instance of `File` for stdin. */
 export const stdin = new File(0);
-/** An instance of `File` for stdout. */
 export const stdout = new File(1);
-/** An instance of `File` for stderr. */
 export const stderr = new File(2);
 
-export interface OpenOptions {
-  /** Sets the option for read access. This option, when true, will indicate that the file should be read-able if opened. */
-  read?: boolean;
-  /** Sets the option for write access.
-   * This option, when true, will indicate that the file should be write-able if opened.
-   * If the file already exists, any write calls on it will overwrite its contents, without truncating it.
-   */
-  write?: boolean;
-  /** Sets the option for creating a new file.
-   * This option indicates whether a new file will be created if the file does not yet already exist.
-   * In order for the file to be created, write or append access must be used.
-   */
-  create?: boolean;
-  /** Sets the option for truncating a previous file.
-   * If a file is successfully opened with this option set it will truncate the file to 0 length if it already exists.
-   * The file must be opened with write access for truncate to work.
-   */
-  truncate?: boolean;
-  /**Sets the option for the append mode.
-   * This option, when true, means that writes will append to a file instead of overwriting previous contents.
-   * Note that setting { write: true, append: true } has the same effect as setting only { append: true }.
-   */
-  append?: boolean;
-  /** Sets the option to always create a new file.
-   * This option indicates whether a new file will be created. No file is allowed to exist at the target location, also no (dangling) symlink.
-   * If { createNew: true } is set, create and truncate are ignored.
-   */
-  createNew?: boolean;
-}
-
-export type OpenMode =
-  /** Read-only. Default. Starts at beginning of file. */
-  | "r"
-  /** Read-write. Start at beginning of file. */
-  | "r+"
-  /** Write-only. Opens and truncates existing file or creates new one for
-   * writing only.
-   */
-  | "w"
-  /** Read-write. Opens and truncates existing file or creates new one for
-   * writing and reading.
-   */
-  | "w+"
-  /** Write-only. Opens existing file or creates new one. Each write appends
-   * content to the end of file.
-   */
-  | "a"
-  /** Read-write. Behaves like "a" and allows to read from file. */
-  | "a+"
-  /** Write-only. Exclusive create - creates new file only if one doesn't exist
-   * already.
-   */
-  | "x"
-  /** Read-write. Behaves like `x` and allows to read from file. */
-  | "x+";
-
-/** Check if OpenOptions is set to valid combination of options.
- *  @returns Tuple representing if openMode is valid and error message if it's not
- *  @internal
- */
 function checkOpenOptions(options: OpenOptions): void {
-  if (Object.values(options).filter(val => val === true).length === 0) {
+  if (Object.values(options).filter((val) => val === true).length === 0) {
     throw new Error("OpenOptions requires at least one option to be true");
   }
 

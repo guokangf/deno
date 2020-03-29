@@ -2,13 +2,14 @@
 
 import { decode, encode } from "../strings/mod.ts";
 import { hasOwnProperty } from "../util/has_own_property.ts";
-import { BufReader, BufWriter, UnexpectedEOFError } from "../io/bufio.ts";
+import { BufReader, BufWriter } from "../io/bufio.ts";
 import { readLong, readShort, sliceLongToBytes } from "../io/ioutil.ts";
 import { Sha1 } from "./sha1.ts";
-import { writeResponse } from "../http/server.ts";
+import { writeResponse } from "../http/io.ts";
 import { TextProtoReader } from "../textproto/mod.ts";
 import { Deferred, deferred } from "../util/async.ts";
 import { assertNotEOF } from "../testing/asserts.ts";
+import { concat } from "../bytes/mod.ts";
 import Conn = Deno.Conn;
 import Writer = Deno.Writer;
 
@@ -18,7 +19,7 @@ export enum OpCode {
   BinaryFrame = 0x2,
   Close = 0x8,
   Ping = 0x9,
-  Pong = 0xa
+  Pong = 0xa,
 }
 
 export type WebSocketEvent =
@@ -57,26 +58,6 @@ export function isWebSocketPongEvent(
 
 export type WebSocketMessage = string | Uint8Array;
 
-// TODO move this to common/util module
-export function append(a: Uint8Array, b: Uint8Array): Uint8Array {
-  if (a == null || !a.length) {
-    return b;
-  }
-  if (b == null || !b.length) {
-    return a;
-  }
-  const output = new Uint8Array(a.length + b.length);
-  output.set(a, 0);
-  output.set(b, a.length);
-  return output;
-}
-
-export class SocketClosedError extends Error {
-  constructor(msg = "Socket has already been closed") {
-    super(msg);
-  }
-}
-
 export interface WebSocketFrame {
   isLastFrame: boolean;
   opcode: OpCode;
@@ -91,21 +72,24 @@ export interface WebSocket {
   receive(): AsyncIterableIterator<WebSocketEvent>;
 
   /**
-   * @throws SocketClosedError
+   * @throws `Deno.errors.ConnectionReset`
    */
   send(data: WebSocketMessage): Promise<void>;
 
   /**
    * @param data
-   * @throws SocketClosedError
+   * @throws `Deno.errors.ConnectionReset`
    */
   ping(data?: WebSocketMessage): Promise<void>;
 
   /** Close connection after sending close frame to peer.
    * This is canonical way of disconnection but it may hang because of peer's response delay.
-   * @throws SocketClosedError
+   * Default close code is 1000 (Normal Closure)
+   * @throws `Deno.errors.ConnectionReset`
    */
-  close(code: number, reason?: string): Promise<void>;
+  close(): Promise<void>;
+  close(code: number): Promise<void>;
+  close(code: number, reason: string): Promise<void>;
 
   /** Close connection forcely without sending close frame to peer.
    *  This is basically undesirable way of disconnection. Use carefully. */
@@ -141,28 +125,28 @@ export async function writeFrame(
       0x80 | frame.opcode,
       hasMask | 0b01111110,
       payloadLength >>> 8,
-      payloadLength & 0x00ff
+      payloadLength & 0x00ff,
     ]);
   } else {
     header = new Uint8Array([
       0x80 | frame.opcode,
       hasMask | 0b01111111,
-      ...sliceLongToBytes(payloadLength)
+      ...sliceLongToBytes(payloadLength),
     ]);
   }
   if (frame.mask) {
-    header = append(header, frame.mask);
+    header = concat(header, frame.mask);
   }
   unmask(frame.payload, frame.mask);
-  header = append(header, frame.payload);
+  header = concat(header, frame.payload);
   const w = BufWriter.create(writer);
   await w.write(header);
   await w.flush();
 }
 
 /** Read websocket frame from given BufReader
- * @throws UnexpectedEOFError When peer closed connection without close frame
- * @throws Error Frame is invalid
+ * @throws `Deno.errors.UnexpectedEof` When peer closed connection without close frame
+ * @throws `Error` Frame is invalid
  */
 export async function readFrame(buf: BufReader): Promise<WebSocketFrame> {
   let b = assertNotEOF(await buf.readByte());
@@ -202,7 +186,7 @@ export async function readFrame(buf: BufReader): Promise<WebSocketFrame> {
     isLastFrame,
     opcode,
     mask,
-    payload
+    payload,
   };
 }
 
@@ -225,7 +209,7 @@ class WebSocketImpl implements WebSocket {
     conn,
     bufReader,
     bufWriter,
-    mask
+    mask,
   }: {
     conn: Conn;
     bufReader?: BufReader;
@@ -287,7 +271,7 @@ class WebSocketImpl implements WebSocket {
           await this.enqueue({
             opcode: OpCode.Pong,
             payload: frame.payload,
-            isLastFrame: true
+            isLastFrame: true,
           });
           yield ["ping", frame.payload] as WebSocketPingEvent;
           break;
@@ -306,7 +290,7 @@ class WebSocketImpl implements WebSocket {
     const { d, frame } = entry;
     writeFrame(frame, this.bufWriter)
       .then(() => d.resolve())
-      .catch(e => d.reject(e))
+      .catch((e) => d.reject(e))
       .finally(() => {
         this.sendQueue.shift();
         this.dequeue();
@@ -315,7 +299,7 @@ class WebSocketImpl implements WebSocket {
 
   private enqueue(frame: WebSocketFrame): Promise<void> {
     if (this._isClosed) {
-      throw new SocketClosedError();
+      throw new Deno.errors.ConnectionReset("Socket has already been closed");
     }
     const d = deferred<void>();
     this.sendQueue.push({ d, frame });
@@ -325,7 +309,7 @@ class WebSocketImpl implements WebSocket {
     return d;
   }
 
-  async send(data: WebSocketMessage): Promise<void> {
+  send(data: WebSocketMessage): Promise<void> {
     const opcode =
       typeof data === "string" ? OpCode.TextFrame : OpCode.BinaryFrame;
     const payload = typeof data === "string" ? encode(data) : data;
@@ -334,18 +318,18 @@ class WebSocketImpl implements WebSocket {
       isLastFrame,
       opcode,
       payload,
-      mask: this.mask
+      mask: this.mask,
     };
     return this.enqueue(frame);
   }
 
-  async ping(data: WebSocketMessage = ""): Promise<void> {
+  ping(data: WebSocketMessage = ""): Promise<void> {
     const payload = typeof data === "string" ? encode(data) : data;
     const frame = {
       isLastFrame: true,
       opcode: OpCode.Ping,
       mask: this.mask,
-      payload
+      payload,
     };
     return this.enqueue(frame);
   }
@@ -355,7 +339,7 @@ class WebSocketImpl implements WebSocket {
     return this._isClosed;
   }
 
-  async close(code: number, reason?: string): Promise<void> {
+  async close(code = 1000, reason?: string): Promise<void> {
     try {
       const header = [code >>> 8, code & 0x00ff];
       let payload: Uint8Array;
@@ -371,7 +355,7 @@ class WebSocketImpl implements WebSocket {
         isLastFrame: true,
         opcode: OpCode.Close,
         mask: this.mask,
-        payload
+        payload,
       });
     } catch (e) {
       throw e;
@@ -394,7 +378,11 @@ class WebSocketImpl implements WebSocket {
       this._isClosed = true;
       const rest = this.sendQueue;
       this.sendQueue = [];
-      rest.forEach(e => e.d.reject(new SocketClosedError()));
+      rest.forEach((e) =>
+        e.d.reject(
+          new Deno.errors.ConnectionReset("Socket has already been closed")
+        )
+      );
     }
   }
 }
@@ -443,8 +431,8 @@ export async function acceptWebSocket(req: {
       headers: new Headers({
         Upgrade: "websocket",
         Connection: "Upgrade",
-        "Sec-WebSocket-Accept": secAccept
-      })
+        "Sec-WebSocket-Accept": secAccept,
+      }),
     });
     return sock;
   }
@@ -492,7 +480,7 @@ export async function handshake(
   const tpReader = new TextProtoReader(bufReader);
   const statusLine = await tpReader.readLine();
   if (statusLine === Deno.EOF) {
-    throw new UnexpectedEOFError();
+    throw new Deno.errors.UnexpectedEof();
   }
   const m = statusLine.match(/^(?<version>\S+) (?<statusCode>\S+) /);
   if (!m) {
@@ -510,7 +498,7 @@ export async function handshake(
 
   const responseHeaders = await tpReader.readMIMEHeader();
   if (responseHeaders === Deno.EOF) {
-    throw new UnexpectedEOFError();
+    throw new Deno.errors.UnexpectedEof();
   }
 
   const expectedSecAccept = createSecAccept(key);
@@ -555,7 +543,7 @@ export async function connectWebSocket(
     conn,
     bufWriter,
     bufReader,
-    mask: createMask()
+    mask: createMask(),
   });
 }
 

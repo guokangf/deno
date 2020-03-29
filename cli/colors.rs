@@ -3,7 +3,7 @@ use regex::Regex;
 use std::env;
 use std::fmt;
 use std::io::Write;
-use termcolor::Color::{Ansi256, Black, Red, White};
+use termcolor::Color::{Ansi256, Black, Magenta, Red, White};
 use termcolor::{Ansi, ColorSpec, WriteColor};
 
 #[cfg(windows)]
@@ -35,11 +35,12 @@ pub fn enable_ansi() {
 }
 
 fn style(s: &str, colorspec: ColorSpec) -> impl fmt::Display {
+  if !use_color() {
+    return String::from(s);
+  }
   let mut v = Vec::new();
   let mut ansi_writer = Ansi::new(&mut v);
-  if use_color() {
-    ansi_writer.set_color(&colorspec).unwrap();
-  }
+  ansi_writer.set_color(&colorspec).unwrap();
   ansi_writer.write_all(s.as_bytes()).unwrap();
   ansi_writer.reset().unwrap();
   String::from_utf8_lossy(&v).into_owned()
@@ -87,8 +88,29 @@ pub fn green(s: String) -> impl fmt::Display {
   style(&s, style_spec)
 }
 
+pub fn magenta(s: String) -> impl fmt::Display {
+  let mut style_spec = ColorSpec::new();
+  style_spec.set_fg(Some(Magenta));
+  style(&s, style_spec)
+}
+
 pub fn bold(s: String) -> impl fmt::Display {
   let mut style_spec = ColorSpec::new();
   style_spec.set_bold(true);
+  style(&s, style_spec)
+}
+
+pub fn gray(s: String) -> impl fmt::Display {
+  let mut style_spec = ColorSpec::new();
+  style_spec.set_fg(Some(Ansi256(8)));
+  style(&s, style_spec)
+}
+
+pub fn italic_bold_gray(s: String) -> impl fmt::Display {
+  let mut style_spec = ColorSpec::new();
+  style_spec
+    .set_fg(Some(Ansi256(8)))
+    .set_bold(true)
+    .set_italic(true);
   style(&s, style_spec)
 }

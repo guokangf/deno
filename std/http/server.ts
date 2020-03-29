@@ -1,91 +1,18 @@
 // Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
-const { listen, listenTLS, copy } = Deno;
-type Listener = Deno.Listener;
-type Conn = Deno.Conn;
-type Reader = Deno.Reader;
-type Writer = Deno.Writer;
-import { BufReader, BufWriter, UnexpectedEOFError } from "../io/bufio.ts";
-import { TextProtoReader } from "../textproto/mod.ts";
-import { STATUS_TEXT } from "./http_status.ts";
+import { BufReader, BufWriter } from "../io/bufio.ts";
 import { assert } from "../testing/asserts.ts";
 import { deferred, Deferred, MuxAsyncIterator } from "../util/async.ts";
 import {
   bodyReader,
   chunkedBodyReader,
-  writeChunkedBody,
-  writeTrailers,
-  emptyReader
+  emptyReader,
+  writeResponse,
+  readRequest,
 } from "./io.ts";
-
-const encoder = new TextEncoder();
-
-export function setContentLength(r: Response): void {
-  if (!r.headers) {
-    r.headers = new Headers();
-  }
-
-  if (r.body) {
-    if (!r.headers.has("content-length")) {
-      // typeof r.body === "string" handled in writeResponse.
-      if (r.body instanceof Uint8Array) {
-        const bodyLength = r.body.byteLength;
-        r.headers.set("content-length", bodyLength.toString());
-      } else {
-        r.headers.set("transfer-encoding", "chunked");
-      }
-    }
-  }
-}
-
-export async function writeResponse(w: Writer, r: Response): Promise<void> {
-  const protoMajor = 1;
-  const protoMinor = 1;
-  const statusCode = r.status || 200;
-  const statusText = STATUS_TEXT.get(statusCode);
-  const writer = BufWriter.create(w);
-  if (!statusText) {
-    throw Error("bad status code");
-  }
-  if (!r.body) {
-    r.body = new Uint8Array();
-  }
-  if (typeof r.body === "string") {
-    r.body = encoder.encode(r.body);
-  }
-
-  let out = `HTTP/${protoMajor}.${protoMinor} ${statusCode} ${statusText}\r\n`;
-
-  setContentLength(r);
-  assert(r.headers != null);
-  const headers = r.headers;
-
-  for (const [key, value] of headers) {
-    out += `${key}: ${value}\r\n`;
-  }
-  out += "\r\n";
-
-  const header = encoder.encode(out);
-  const n = await writer.write(header);
-  assert(n === header.byteLength);
-
-  if (r.body instanceof Uint8Array) {
-    const n = await writer.write(r.body);
-    assert(n === r.body.byteLength);
-  } else if (headers.has("content-length")) {
-    const contentLength = headers.get("content-length");
-    assert(contentLength != null);
-    const bodyLength = parseInt(contentLength);
-    const n = await copy(writer, r.body);
-    assert(n === bodyLength);
-  } else {
-    await writeChunkedBody(writer, r.body);
-  }
-  if (r.trailers) {
-    const t = await r.trailers();
-    await writeTrailers(writer, headers, t);
-  }
-  await writer.flush();
-}
+import Listener = Deno.Listener;
+import Conn = Deno.Conn;
+import Reader = Deno.Reader;
+const { listen, listenTLS } = Deno;
 
 export class ServerRequest {
   url!: string;
@@ -194,116 +121,25 @@ export class ServerRequest {
   }
 }
 
-function fixLength(req: ServerRequest): void {
-  const contentLength = req.headers.get("Content-Length");
-  if (contentLength) {
-    const arrClen = contentLength.split(",");
-    if (arrClen.length > 1) {
-      const distinct = [...new Set(arrClen.map((e): string => e.trim()))];
-      if (distinct.length > 1) {
-        throw Error("cannot contain multiple Content-Length headers");
-      } else {
-        req.headers.set("Content-Length", distinct[0]);
-      }
-    }
-    const c = req.headers.get("Content-Length");
-    if (req.method === "HEAD" && c && c !== "0") {
-      throw Error("http: method cannot contain a Content-Length");
-    }
-    if (c && req.headers.has("transfer-encoding")) {
-      // A sender MUST NOT send a Content-Length header field in any message
-      // that contains a Transfer-Encoding header field.
-      // rfc: https://tools.ietf.org/html/rfc7230#section-3.3.2
-      throw new Error(
-        "http: Transfer-Encoding and Content-Length cannot be send together"
-      );
-    }
-  }
-}
-
-/**
- * ParseHTTPVersion parses a HTTP version string.
- * "HTTP/1.0" returns (1, 0, true).
- * Ported from https://github.com/golang/go/blob/f5c43b9/src/net/http/request.go#L766-L792
- */
-export function parseHTTPVersion(vers: string): [number, number] {
-  switch (vers) {
-    case "HTTP/1.1":
-      return [1, 1];
-
-    case "HTTP/1.0":
-      return [1, 0];
-
-    default: {
-      const Big = 1000000; // arbitrary upper bound
-      const digitReg = /^\d+$/; // test if string is only digit
-
-      if (!vers.startsWith("HTTP/")) {
-        break;
-      }
-
-      const dot = vers.indexOf(".");
-      if (dot < 0) {
-        break;
-      }
-
-      const majorStr = vers.substring(vers.indexOf("/") + 1, dot);
-      const major = parseInt(majorStr);
-      if (
-        !digitReg.test(majorStr) ||
-        isNaN(major) ||
-        major < 0 ||
-        major > Big
-      ) {
-        break;
-      }
-
-      const minorStr = vers.substring(dot + 1);
-      const minor = parseInt(minorStr);
-      if (
-        !digitReg.test(minorStr) ||
-        isNaN(minor) ||
-        minor < 0 ||
-        minor > Big
-      ) {
-        break;
-      }
-
-      return [major, minor];
-    }
-  }
-
-  throw new Error(`malformed HTTP version ${vers}`);
-}
-
-export async function readRequest(
-  conn: Conn,
-  bufr: BufReader
-): Promise<ServerRequest | Deno.EOF> {
-  const tp = new TextProtoReader(bufr);
-  const firstLine = await tp.readLine(); // e.g. GET /index.html HTTP/1.0
-  if (firstLine === Deno.EOF) return Deno.EOF;
-  const headers = await tp.readMIMEHeader();
-  if (headers === Deno.EOF) throw new UnexpectedEOFError();
-
-  const req = new ServerRequest();
-  req.conn = conn;
-  req.r = bufr;
-  [req.method, req.url, req.proto] = firstLine.split(" ", 3);
-  [req.protoMinor, req.protoMajor] = parseHTTPVersion(req.proto);
-  req.headers = headers;
-  fixLength(req);
-  return req;
-}
-
 export class Server implements AsyncIterable<ServerRequest> {
   private closing = false;
+  private connections: Conn[] = [];
 
   constructor(public listener: Listener) {}
 
   close(): void {
     this.closing = true;
     this.listener.close();
+    for (const conn of this.connections) {
+      try {
+        conn.close();
+      } catch (e) {
+        // Connection might have been already closed
+        if (!(e instanceof Deno.errors.BadResource)) {
+          throw e;
+        }
+      }
+    }
   }
 
   // Yields all HTTP requests on a single TCP connection.
@@ -312,7 +148,7 @@ export class Server implements AsyncIterable<ServerRequest> {
   ): AsyncIterableIterator<ServerRequest> {
     const bufr = new BufReader(conn);
     const w = new BufWriter(conn);
-    let req: ServerRequest | Deno.EOF | undefined;
+    let req: ServerRequest | Deno.EOF = Deno.EOF;
     let err: Error | undefined;
 
     while (!this.closing) {
@@ -320,9 +156,8 @@ export class Server implements AsyncIterable<ServerRequest> {
         req = await readRequest(conn, bufr);
       } catch (e) {
         err = e;
-        break;
       }
-      if (req === Deno.EOF) {
+      if (err != null || req === Deno.EOF) {
         break;
       }
 
@@ -336,31 +171,30 @@ export class Server implements AsyncIterable<ServerRequest> {
         // Something bad happened during response.
         // (likely other side closed during pipelined req)
         // req.done implies this connection already closed, so we can just return.
+        this.untrackConnection(req.conn);
         return;
       }
       // Consume unread body and trailers if receiver didn't consume those data
       await req.finalize();
     }
 
-    if (req === Deno.EOF) {
-      // The connection was gracefully closed.
-    } else if (err && req) {
-      // An error was thrown while parsing request headers.
-      try {
-        await writeResponse(req.w, {
-          status: 400,
-          body: encoder.encode(`${err.message}\r\n\r\n`)
-        });
-      } catch (_) {
-        // The connection is destroyed.
-        // Ignores the error.
-      }
-    } else if (this.closing) {
-      // There are more requests incoming but the server is closing.
-      // TODO(ry): send a back a HTTP 503 Service Unavailable status.
+    this.untrackConnection(conn);
+    try {
+      conn.close();
+    } catch (e) {
+      // might have been already closed
     }
+  }
 
-    conn.close();
+  private trackConnection(conn: Conn): void {
+    this.connections.push(conn);
+  }
+
+  private untrackConnection(conn: Conn): void {
+    const index = this.connections.indexOf(conn);
+    if (index !== -1) {
+      this.connections.splice(index, 1);
+    }
   }
 
   // Accepts a new TCP connection and yields all HTTP requests that arrive on
@@ -372,9 +206,16 @@ export class Server implements AsyncIterable<ServerRequest> {
   ): AsyncIterableIterator<ServerRequest> {
     if (this.closing) return;
     // Wait for a new connection.
-    const { value, done } = await this.listener.next();
-    if (done) return;
-    const conn = value as Conn;
+    let conn: Conn;
+    try {
+      conn = await this.listener.accept();
+    } catch (error) {
+      if (error instanceof Deno.errors.BadResource) {
+        return;
+      }
+      throw error;
+    }
+    this.trackConnection(conn);
     // Try to accept another connection and add it to the multiplexer.
     mux.add(this.acceptConnAndIterateHttpRequests(mux));
     // Yield the requests that arrive on the just-accepted connection.
@@ -392,7 +233,7 @@ export class Server implements AsyncIterable<ServerRequest> {
 export type HTTPOptions = Omit<Deno.ListenOptions, "transport">;
 
 /**
- * Start a HTTP server
+ * Create a HTTP server
  *
  *     import { serve } from "https://deno.land/std/http/server.ts";
  *     const body = "Hello World\n";
@@ -411,6 +252,18 @@ export function serve(addr: string | HTTPOptions): Server {
   return new Server(listener);
 }
 
+/**
+ * Start an HTTP server with given options and request handler
+ *
+ *     const body = "Hello World\n";
+ *     const options = { port: 8000 };
+ *     listenAndServeTLS(options, (req) => {
+ *       req.respond({ body });
+ *     });
+ *
+ * @param options Server configuration
+ * @param handler Request handler
+ */
 export async function listenAndServe(
   addr: string | HTTPOptions,
   handler: (req: ServerRequest) => void
@@ -445,14 +298,14 @@ export type HTTPSOptions = Omit<Deno.ListenTLSOptions, "transport">;
 export function serveTLS(options: HTTPSOptions): Server {
   const tlsOptions: Deno.ListenTLSOptions = {
     ...options,
-    transport: "tcp"
+    transport: "tcp",
   };
   const listener = listenTLS(tlsOptions);
   return new Server(listener);
 }
 
 /**
- * Create an HTTPS server with given options and request handler
+ * Start an HTTPS server with given options and request handler
  *
  *     const body = "Hello HTTPS";
  *     const options = {

@@ -1,5 +1,6 @@
 // Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
 
+use crate::fs as deno_fs;
 use crate::installer::is_remote_url;
 use deno_core::ErrBox;
 use std;
@@ -12,11 +13,17 @@ fn is_supported(p: &Path) -> bool {
   if let Some(Component::Normal(basename_os_str)) = p.components().next_back() {
     let basename = basename_os_str.to_string_lossy();
     basename.ends_with("_test.ts")
+      || basename.ends_with("_test.tsx")
       || basename.ends_with("_test.js")
+      || basename.ends_with("_test.jsx")
       || basename.ends_with(".test.ts")
+      || basename.ends_with(".test.tsx")
       || basename.ends_with(".test.js")
+      || basename.ends_with(".test.jsx")
       || basename == "test.ts"
+      || basename == "test.tsx"
       || basename == "test.js"
+      || basename == "test.jsx"
   } else {
     false
   }
@@ -32,8 +39,7 @@ pub fn prepare_test_modules_urls(
   let mut prepared = vec![];
 
   for path in include_paths {
-    let q = root_path.join(path);
-    let p = q.canonicalize()?;
+    let p = deno_fs::normalize_path(&root_path.join(path));
     if p.is_dir() {
       let test_files = crate::fs::files_in_subtree(p, is_supported);
       let test_files_as_urls = test_files
@@ -63,7 +69,7 @@ pub fn render_test_file(modules: Vec<Url>, fail_fast: bool) -> String {
   }
 
   let run_tests_cmd =
-    format!("Deno.runTests({{ exitOnFail: {} }});\n", fail_fast);
+    format!("Deno.runTests({{ failFast: {} }});\n", fail_fast);
   test_file.push_str(&run_tests_cmd);
 
   test_file
@@ -108,11 +114,17 @@ mod tests {
   #[test]
   fn test_is_supported() {
     assert!(is_supported(Path::new("tests/subdir/foo_test.ts")));
+    assert!(is_supported(Path::new("tests/subdir/foo_test.tsx")));
     assert!(is_supported(Path::new("tests/subdir/foo_test.js")));
+    assert!(is_supported(Path::new("tests/subdir/foo_test.jsx")));
     assert!(is_supported(Path::new("bar/foo.test.ts")));
+    assert!(is_supported(Path::new("bar/foo.test.tsx")));
     assert!(is_supported(Path::new("bar/foo.test.js")));
+    assert!(is_supported(Path::new("bar/foo.test.jsx")));
     assert!(is_supported(Path::new("foo/bar/test.js")));
+    assert!(is_supported(Path::new("foo/bar/test.jsx")));
     assert!(is_supported(Path::new("foo/bar/test.ts")));
+    assert!(is_supported(Path::new("foo/bar/test.tsx")));
     assert!(!is_supported(Path::new("README.md")));
     assert!(!is_supported(Path::new("lib/typescript.d.ts")));
     assert!(!is_supported(Path::new("notatest.js")));

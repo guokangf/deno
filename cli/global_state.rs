@@ -9,6 +9,7 @@ use crate::deno_dir;
 use crate::file_fetcher::SourceFileFetcher;
 use crate::flags;
 use crate::http_cache;
+use crate::inspector::InspectorServer;
 use crate::lockfile::Lockfile;
 use crate::msg;
 use crate::permissions::DenoPermissions;
@@ -31,7 +32,7 @@ pub struct GlobalState(Arc<GlobalStateInner>);
 /// It is shared by all created workers (thus V8 isolates).
 pub struct GlobalStateInner {
   /// Flags parsed from `argv` contents.
-  pub flags: flags::DenoFlags,
+  pub flags: flags::Flags,
   /// Permissions parsed from `flags`.
   pub permissions: DenoPermissions,
   pub dir: deno_dir::DenoDir,
@@ -42,6 +43,7 @@ pub struct GlobalStateInner {
   pub wasm_compiler: WasmCompiler,
   pub lockfile: Option<Mutex<Lockfile>>,
   pub compiler_starts: AtomicUsize,
+  pub inspector_server: Option<InspectorServer>,
   compile_lock: AsyncMutex<()>,
 }
 
@@ -53,7 +55,7 @@ impl Deref for GlobalState {
 }
 
 impl GlobalState {
-  pub fn new(flags: flags::DenoFlags) -> Result<Self, ErrBox> {
+  pub fn new(flags: flags::Flags) -> Result<Self, ErrBox> {
     let custom_root = env::var("DENO_DIR").map(String::into).ok();
     let dir = deno_dir::DenoDir::new(custom_root)?;
     let deps_cache_location = dir.root.join("deps");
@@ -82,7 +84,16 @@ impl GlobalState {
       None
     };
 
+    let inspector_server = if let Some(ref host) = flags.inspect {
+      Some(InspectorServer::new(host, false))
+    } else if let Some(ref host) = flags.inspect_brk {
+      Some(InspectorServer::new(host, true))
+    } else {
+      None
+    };
+
     let inner = GlobalStateInner {
+      inspector_server,
       dir,
       permissions: DenoPermissions::from_flags(&flags),
       flags,
@@ -168,9 +179,9 @@ impl GlobalState {
 
   #[cfg(test)]
   pub fn mock(argv: Vec<String>) -> GlobalState {
-    GlobalState::new(flags::DenoFlags {
+    GlobalState::new(flags::Flags {
       argv,
-      ..flags::DenoFlags::default()
+      ..flags::Flags::default()
     })
     .unwrap()
   }
@@ -184,8 +195,8 @@ fn thread_safe() {
 
 #[test]
 fn import_map_given_for_repl() {
-  let _result = GlobalState::new(flags::DenoFlags {
+  let _result = GlobalState::new(flags::Flags {
     import_map_path: Some("import_map.json".to_string()),
-    ..flags::DenoFlags::default()
+    ..flags::Flags::default()
   });
 }

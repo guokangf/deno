@@ -1,19 +1,18 @@
 // Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
 use super::dispatch_json::{Deserialize, JsonOp, Value};
-use super::io::StreamResource;
+use super::io::{StreamResource, StreamResourceHolder};
 use crate::op_error::OpError;
 use crate::resolve_addr::resolve_addr;
 use crate::state::State;
 use deno_core::*;
+use futures::future::poll_fn;
 use futures::future::FutureExt;
 use std;
 use std::convert::From;
 use std::fs::File;
-use std::future::Future;
 use std::io::BufReader;
 use std::net::SocketAddr;
 use std::path::Path;
-use std::pin::Pin;
 use std::sync::Arc;
 use std::task::Context;
 use std::task::Poll;
@@ -86,7 +85,9 @@ pub fn op_connect_tls(
     let mut state = state_.borrow_mut();
     let rid = state.resource_table.add(
       "clientTlsStream",
-      Box::new(StreamResource::ClientTlsStream(Box::new(tls_stream))),
+      Box::new(StreamResourceHolder::new(StreamResource::ClientTlsStream(
+        Box::new(tls_stream),
+      ))),
     );
     Ok(json!({
         "rid": rid,
@@ -265,55 +266,6 @@ fn op_listen_tls(
   })))
 }
 
-#[derive(Debug, PartialEq)]
-enum AcceptTlsState {
-  Pending,
-  Done,
-}
-
-/// A future representing state of accepting a TLS connection.
-pub struct AcceptTls {
-  accept_state: AcceptTlsState,
-  rid: ResourceId,
-  state: State,
-}
-
-impl Future for AcceptTls {
-  type Output = Result<(TcpStream, SocketAddr), OpError>;
-
-  fn poll(self: Pin<&mut Self>, cx: &mut Context) -> Poll<Self::Output> {
-    let inner = self.get_mut();
-    if inner.accept_state == AcceptTlsState::Done {
-      panic!("poll AcceptTls after it's done");
-    }
-
-    let mut state = inner.state.borrow_mut();
-    let listener_resource = state
-      .resource_table
-      .get_mut::<TlsListenerResource>(inner.rid)
-      .ok_or_else(|| OpError::other("Listener has been closed".to_string()))?;
-
-    let listener = &mut listener_resource.listener;
-
-    match listener.poll_accept(cx).map_err(OpError::from) {
-      Poll::Ready(Ok((stream, addr))) => {
-        listener_resource.untrack_task();
-        inner.accept_state = AcceptTlsState::Done;
-        Poll::Ready(Ok((stream, addr)))
-      }
-      Poll::Pending => {
-        listener_resource.track_task(cx)?;
-        Poll::Pending
-      }
-      Poll::Ready(Err(e)) => {
-        listener_resource.untrack_task();
-        inner.accept_state = AcceptTlsState::Done;
-        Poll::Ready(Err(e))
-      }
-    }
-  }
-}
-
 #[derive(Deserialize)]
 struct AcceptTlsArgs {
   rid: i32,
@@ -328,11 +280,29 @@ fn op_accept_tls(
   let rid = args.rid as u32;
   let state = state.clone();
   let op = async move {
-    let accept_fut = AcceptTls {
-      accept_state: AcceptTlsState::Pending,
-      rid,
-      state: state.clone(),
-    };
+    let accept_fut = poll_fn(|cx| {
+      let resource_table = &mut state.borrow_mut().resource_table;
+      let listener_resource = resource_table
+        .get_mut::<TlsListenerResource>(rid)
+        .ok_or_else(|| {
+          OpError::bad_resource("Listener has been closed".to_string())
+        })?;
+      let listener = &mut listener_resource.listener;
+      match listener.poll_accept(cx).map_err(OpError::from) {
+        Poll::Ready(Ok((stream, addr))) => {
+          listener_resource.untrack_task();
+          Poll::Ready(Ok((stream, addr)))
+        }
+        Poll::Pending => {
+          listener_resource.track_task(cx)?;
+          Poll::Pending
+        }
+        Poll::Ready(Err(e)) => {
+          listener_resource.untrack_task();
+          Poll::Ready(Err(e))
+        }
+      }
+    });
     let (tcp_stream, _socket_addr) = accept_fut.await?;
     let local_addr = tcp_stream.local_addr()?;
     let remote_addr = tcp_stream.peer_addr()?;
@@ -341,7 +311,7 @@ fn op_accept_tls(
       let resource = state
         .resource_table
         .get::<TlsListenerResource>(rid)
-        .ok_or_else(OpError::bad_resource)
+        .ok_or_else(OpError::bad_resource_id)
         .expect("Can't find tls listener");
       resource.tls_acceptor.clone()
     };
@@ -350,7 +320,9 @@ fn op_accept_tls(
       let mut state = state.borrow_mut();
       state.resource_table.add(
         "serverTlsStream",
-        Box::new(StreamResource::ServerTlsStream(Box::new(tls_stream))),
+        Box::new(StreamResourceHolder::new(StreamResource::ServerTlsStream(
+          Box::new(tls_stream),
+        ))),
       )
     };
     Ok(json!({

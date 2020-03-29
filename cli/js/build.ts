@@ -5,18 +5,15 @@ export type OperatingSystem = "mac" | "win" | "linux";
 export type Arch = "x64" | "arm64";
 
 // Do not add unsupported platforms.
-/** Build related information */
 export interface BuildInfo {
-  /** The CPU architecture. */
   arch: Arch;
 
-  /** The operating system. */
   os: OperatingSystem;
 }
 
 export const build: BuildInfo = {
   arch: "" as Arch,
-  os: "" as OperatingSystem
+  os: "" as OperatingSystem,
 };
 
 export function setBuildInfo(os: OperatingSystem, arch: Arch): void {

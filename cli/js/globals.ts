@@ -1,22 +1,22 @@
 // Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
 
-import * as blob from "./blob.ts";
-import * as consoleTypes from "./console.ts";
-import * as customEvent from "./custom_event.ts";
-import * as domTypes from "./dom_types.ts";
-import * as domFile from "./dom_file.ts";
-import * as event from "./event.ts";
-import * as eventTarget from "./event_target.ts";
-import * as formData from "./form_data.ts";
-import * as fetchTypes from "./fetch.ts";
-import * as headers from "./headers.ts";
-import * as textEncoding from "./text_encoding.ts";
-import * as timers from "./timers.ts";
-import * as url from "./url.ts";
-import * as urlSearchParams from "./url_search_params.ts";
-import * as workers from "./workers.ts";
-import * as performanceUtil from "./performance.ts";
-import * as request from "./request.ts";
+import * as blob from "./web/blob.ts";
+import * as consoleTypes from "./web/console.ts";
+import * as customEvent from "./web/custom_event.ts";
+import * as domTypes from "./web/dom_types.ts";
+import * as domFile from "./web/dom_file.ts";
+import * as event from "./web/event.ts";
+import * as eventTarget from "./web/event_target.ts";
+import * as formData from "./web/form_data.ts";
+import * as fetchTypes from "./web/fetch.ts";
+import * as headers from "./web/headers.ts";
+import * as textEncoding from "./web/text_encoding.ts";
+import * as timers from "./web/timers.ts";
+import * as url from "./web/url.ts";
+import * as urlSearchParams from "./web/url_search_params.ts";
+import * as workers from "./web/workers.ts";
+import * as performanceUtil from "./web/performance.ts";
+import * as request from "./web/request.ts";
 
 // These imports are not exposed and therefore are fine to just import the
 // symbols required.
@@ -91,12 +91,19 @@ declare global {
       data?: ArrayBufferView
     ): null | Uint8Array;
 
+    setMacrotaskCallback(cb: () => boolean): void;
+
     shared: SharedArrayBuffer;
 
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    evalContext(code: string): [any, EvalErrorInfo | null];
+    evalContext(
+      code: string,
+      scriptName?: string
+    ): [unknown, EvalErrorInfo | null];
 
-    errorToJSON: (e: Error) => string;
+    formatError: (e: Error) => string;
+
+    decode(bytes: Uint8Array): string;
+    encode(text: string): Uint8Array;
   }
 
   // Only `var` variables show up in the `globalThis` type when doing a global
@@ -104,7 +111,7 @@ declare global {
   /* eslint-disable no-var */
   var addEventListener: (
     type: string,
-    callback: (event: domTypes.Event) => void | null,
+    callback: domTypes.EventListenerOrEventListenerObject | null,
     options?: boolean | domTypes.AddEventListenerOptions | undefined
   ) => void;
   var queueMicrotask: (callback: () => void) => void;
@@ -153,7 +160,7 @@ export function writable(value: unknown): PropertyDescriptor {
     value,
     writable: true,
     enumerable: true,
-    configurable: true
+    configurable: true,
   };
 }
 
@@ -161,14 +168,22 @@ export function nonEnumerable(value: unknown): PropertyDescriptor {
   return {
     value,
     writable: true,
-    configurable: true
+    configurable: true,
   };
 }
 
 export function readOnly(value: unknown): PropertyDescriptor {
   return {
     value,
-    enumerable: true
+    enumerable: true,
+  };
+}
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+export function getterOnly(getter: () => any): PropertyDescriptor {
+  return {
+    get: getter,
+    enumerable: true,
   };
 }
 
@@ -181,7 +196,7 @@ export const windowOrWorkerGlobalScopeMethods = {
   fetch: writable(fetchTypes.fetch),
   // queueMicrotask is bound in Rust
   setInterval: writable(timers.setInterval),
-  setTimeout: writable(timers.setTimeout)
+  setTimeout: writable(timers.setTimeout),
 };
 
 // Other properties shared between WindowScope and WorkerGlobalScope
@@ -201,7 +216,7 @@ export const windowOrWorkerGlobalScopeProperties = {
   Request: nonEnumerable(request.Request),
   Response: nonEnumerable(fetchTypes.Response),
   performance: writable(new performanceUtil.Performance()),
-  Worker: nonEnumerable(workers.WorkerImpl)
+  Worker: nonEnumerable(workers.WorkerImpl),
 };
 
 export const eventTargetProperties = {
@@ -218,5 +233,5 @@ export const eventTargetProperties = {
   dispatchEvent: readOnly(eventTarget.EventTarget.prototype.dispatchEvent),
   removeEventListener: readOnly(
     eventTarget.EventTarget.prototype.removeEventListener
-  )
+  ),
 };

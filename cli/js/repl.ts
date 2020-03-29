@@ -1,23 +1,14 @@
 // Copyright 2018-2020 the Deno authors. All rights reserved. MIT license.
-import { close } from "./files.ts";
-import { exit } from "./os.ts";
+import { exit } from "./ops/os.ts";
 import { core } from "./core.ts";
-import { formatError } from "./format_error.ts";
-import { stringifyArgs } from "./console.ts";
-import { sendSync, sendAsync } from "./dispatch_json.ts";
+import { stringifyArgs } from "./web/console.ts";
+import { startRepl, readline } from "./ops/repl.ts";
+import { close } from "./ops/resources.ts";
 
-/**
- * REPL logging.
- * In favor of console.log to avoid unwanted indentation
- */
 function replLog(...args: unknown[]): void {
   core.print(stringifyArgs(args) + "\n");
 }
 
-/**
- * REPL logging for errors.
- * In favor of console.error to avoid unwanted indentation
- */
 function replError(...args: unknown[]): void {
   core.print(stringifyArgs(args) + "\n", true);
 }
@@ -26,30 +17,21 @@ const helpMsg = [
   "_       Get last evaluation result",
   "_error  Get last thrown error",
   "exit    Exit the REPL",
-  "help    Print this help message"
+  "help    Print this help message",
 ].join("\n");
 
 const replCommands = {
   exit: {
     get(): void {
       exit(0);
-    }
+    },
   },
   help: {
     get(): string {
       return helpMsg;
-    }
-  }
+    },
+  },
 };
-
-function startRepl(historyFile: string): number {
-  return sendSync("op_repl_start", { historyFile });
-}
-
-// @internal
-export async function readline(rid: number, prompt: string): Promise<string> {
-  return sendAsync("op_repl_readline", { rid, prompt });
-}
 
 // Error messages that allow users to continue input
 // instead of throwing an error to REPL
@@ -60,7 +42,7 @@ const recoverableErrorMessages = [
   "Missing initializer in const declaration", // const a
   "Missing catch or finally after try", // try {}
   "missing ) after argument list", // console.log(1
-  "Unterminated template literal" // `template
+  "Unterminated template literal", // `template
   // TODO(kevinkassimo): need a parser to handling errors such as:
   // "Missing } in template expression" // `${ or `${ a 123 }`
 ];
@@ -89,9 +71,7 @@ function evaluate(code: string): boolean {
   } else {
     lastThrownError = errInfo.thrown;
     if (errInfo.isNativeError) {
-      const formattedError = formatError(
-        core.errorToJSON(errInfo.thrown as Error)
-      );
+      const formattedError = core.formatError(errInfo.thrown as Error);
       replError(formattedError);
     } else {
       replError("Thrown:", errInfo.thrown);
@@ -125,10 +105,10 @@ export async function replLoop(): Promise<void> {
         value: value,
         writable: true,
         enumerable: true,
-        configurable: true
+        configurable: true,
       });
       console.log("Last evaluation result is no longer saved to _.");
-    }
+    },
   });
 
   // Configure globalThis._error to give the last thrown error.
@@ -140,10 +120,10 @@ export async function replLoop(): Promise<void> {
         value: value,
         writable: true,
         enumerable: true,
-        configurable: true
+        configurable: true,
       });
       console.log("Last thrown error is no longer saved to _error.");
-    }
+    },
   });
 
   while (true) {
@@ -162,7 +142,7 @@ export async function replLoop(): Promise<void> {
         if (err.message !== "Interrupted") {
           // e.g. this happens when we have deno.close(3).
           // We want to display the problem.
-          const formattedError = formatError(core.errorToJSON(err));
+          const formattedError = core.formatError(err);
           replError(formattedError);
         }
         // Quit REPL anyways.
@@ -184,7 +164,7 @@ export async function replLoop(): Promise<void> {
         } else {
           // e.g. this happens when we have deno.close(3).
           // We want to display the problem.
-          const formattedError = formatError(core.errorToJSON(err));
+          const formattedError = core.formatError(err);
           replError(formattedError);
           quitRepl(1);
         }
